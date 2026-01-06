@@ -1,0 +1,39 @@
+{
+  "name": "ivs-ndi-bridge",
+  "version": "0.1.0",
+  "description": "IVS Real-Time WebRTC to NDI zero-copy converter for Apple Silicon",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "npx electron .",
+    "dev": "NODE_ENV=development npx electron .",
+    "rebuild": "npx electron-rebuild -f -w grandiose",
+    "postinstall": "npx electron-rebuild || true"
+  },
+  "author": "Pierre Bessette",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^28.1.0",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.bessette.ivs-ndi-bridge",
+    "productName": "IVS-NDI Bridge",
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    }
+  },
+  "dependencies": {
+    "grandiose": "github:rse/grandiose"
+  }
+}
