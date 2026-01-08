@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Gradient pour le fond -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    
+    <!-- Gradient AWS IVS (orange) -->
+    <linearGradient id="ivsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff9900"/>
+      <stop offset="100%" style="stop-color:#ff6600"/>
+    </linearGradient>
+    
+    <!-- Gradient NDI (bleu) -->
+    <linearGradient id="ndiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff"/>
+      <stop offset="100%" style="stop-color:#0099ff"/>
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Fond arrondi -->
+  <rect x="32" y="32" width="960" height="960" rx="180" ry="180" fill="url(#bgGrad)"/>
+  
+  <!-- Bordure subtile -->
+  <rect x="32" y="32" width="960" height="960" rx="180" ry="180" fill="none" stroke="#333" stroke-width="4"/>
+  
+  <!-- Symbole IVS (gauche) - Camera/Play -->
+  <g transform="translate(180, 320)" filter="url(#glow)">
+    <!-- Corps de la caméra -->
+    <rect x="0" y="40" width="200" height="160" rx="20" fill="url(#ivsGrad)"/>
+    <!-- Objectif -->
+    <polygon points="200,80 280,40 280,200 200,160" fill="url(#ivsGrad)"/>
+    <!-- Play triangle -->
+    <polygon points="60,80 60,160 130,120" fill="#1a1a2e"/>
+  </g>
+  
+  <!-- Flèche de connexion (centre) -->
+  <g transform="translate(430, 380)" filter="url(#glow)">
+    <path d="M0,80 L100,80 L100,50 L160,100 L100,150 L100,120 L0,120 Z" fill="#fff" opacity="0.9"/>
+  </g>
+  
+  <!-- Symbole NDI (droite) - Signal -->
+  <g transform="translate(620, 320)" filter="url(#glow)">
+    <!-- Cercle central -->
+    <circle cx="100" cy="120" r="35" fill="url(#ndiGrad)"/>
+    
+    <!-- Arcs de signal -->
+    <path d="M100,120 m-60,0 a60,60 0 0,1 120,0" fill="none" stroke="url(#ndiGrad)" stroke-width="12" stroke-linecap="round"/>
+    <path d="M100,120 m-90,0 a90,90 0 0,1 180,0" fill="none" stroke="url(#ndiGrad)" stroke-width="12" stroke-linecap="round" opacity="0.7"/>
+    <path d="M100,120 m-120,0 a120,120 0 0,1 240,0" fill="none" stroke="url(#ndiGrad)" stroke-width="12" stroke-linecap="round" opacity="0.4"/>
+  </g>
+  
+  <!-- Texte IVS -->
+  <text x="280" y="620" font-family="SF Pro Display, Helvetica Neue, Arial" font-size="72" font-weight="bold" fill="url(#ivsGrad)" text-anchor="middle">IVS</text>
+  
+  <!-- Texte NDI -->
+  <text x="720" y="620" font-family="SF Pro Display, Helvetica Neue, Arial" font-size="72" font-weight="bold" fill="url(#ndiGrad)" text-anchor="middle">NDI</text>
+  
+  <!-- Bridge text -->
+  <text x="512" y="720" font-family="SF Pro Display, Helvetica Neue, Arial" font-size="48" font-weight="500" fill="#888" text-anchor="middle">BRIDGE</text>
+</svg>

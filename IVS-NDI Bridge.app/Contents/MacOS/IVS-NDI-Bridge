@@ -1,0 +1,19 @@
+#!/bin/zsh
+
+# IVS-NDI Bridge Launcher
+# Charge NVM pour accéder à Node, puis lance Electron local
+
+# Charger NVM (gestionnaire de versions Node)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
+# Répertoire du projet
+PROJECT_DIR="/Users/bessette_nouveau_macbook_pro/Projets/ivs-ndi-bridge"
+
+cd "$PROJECT_DIR" || {
+    osascript -e 'display alert "Erreur IVS-NDI Bridge" message "Projet introuvable"'
+    exit 1
+}
+
+# Lancer Electron local (utilise le node chargé par NVM)
+exec "./node_modules/.bin/electron" .

@@ -20,15 +20,16 @@
  * └─────────────────────────────────────────────────────────────┘
  */
 
-const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, screen } = require('electron');
 const path = require('path');
 
 // NDI (will be initialized after app ready)
 let grandiose = null;
 let ndiSenders = new Map(); // participantId -> NDI sender info
 
-// Window reference
+// Window references
 let mainWindow = null;
+let projectorWindows = new Map(); // participantId -> BrowserWindow
 
 // Configuration
 const CONFIG = {
@@ -359,6 +360,113 @@ ipcMain.handle('config:get', () => {
 
 ipcMain.handle('dialog:showError', (event, { title, message }) => {
     dialog.showErrorBox(title, message);
+});
+
+// ==================== PROJECTOR HANDLERS ====================
+
+ipcMain.handle('projector:getDisplays', () => {
+    const displays = screen.getAllDisplays();
+    return displays.map((d, index) => ({
+        id: d.id,
+        index,
+        label: d.label || `Écran ${index + 1}`,
+        bounds: d.bounds,
+        primary: d.id === screen.getPrimaryDisplay().id
+    }));
+});
+
+ipcMain.handle('projector:open', (event, { participantId, displayName, displayId, windowed }) => {
+    // Fermer fenêtre existante si présente
+    if (projectorWindows.has(participantId)) {
+        projectorWindows.get(participantId).close();
+        projectorWindows.delete(participantId);
+    }
+
+    let windowOptions = {
+        title: `Projecteur - ${displayName}`,
+        backgroundColor: '#000000',
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, 'preload.js')
+        }
+    };
+
+    if (windowed) {
+        // Mode fenêtré
+        windowOptions.width = 960;
+        windowOptions.height = 540;
+        windowOptions.minWidth = 320;
+        windowOptions.minHeight = 180;
+        windowOptions.frame = true;
+        windowOptions.resizable = true;
+    } else {
+        // Mode plein écran sur écran spécifié
+        const displays = screen.getAllDisplays();
+        const targetDisplay = displayId 
+            ? displays.find(d => d.id === displayId) 
+            : screen.getPrimaryDisplay();
+        
+        if (targetDisplay) {
+            windowOptions.x = targetDisplay.bounds.x;
+            windowOptions.y = targetDisplay.bounds.y;
+            windowOptions.width = targetDisplay.bounds.width;
+            windowOptions.height = targetDisplay.bounds.height;
+        }
+        windowOptions.frame = false;
+        windowOptions.resizable = false;
+        windowOptions.fullscreen = false; // On évite le fullscreen natif macOS (bugs connus)
+        windowOptions.simpleFullscreen = true;
+        windowOptions.alwaysOnTop = true;
+    }
+
+    const projectorWindow = new BrowserWindow(windowOptions);
+    
+    // Charger la page projecteur
+    projectorWindow.loadFile(path.join(__dirname, 'renderer', 'projector.html'), {
+        query: { participantId, displayName }
+    });
+
+    projectorWindow.on('closed', () => {
+        projectorWindows.delete(participantId);
+        // Notifier le renderer principal
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('projector:closed', { participantId });
+        }
+    });
+
+    // Raccourci Escape pour fermer
+    projectorWindow.webContents.on('before-input-event', (event, input) => {
+        if (input.key === 'Escape') {
+            projectorWindow.close();
+        }
+    });
+
+    projectorWindows.set(participantId, projectorWindow);
+    console.log(`[Projector] Opened for ${displayName} (windowed: ${windowed})`);
+    
+    return { success: true, windowed };
+});
+
+ipcMain.handle('projector:close', (event, { participantId }) => {
+    if (projectorWindows.has(participantId)) {
+        projectorWindows.get(participantId).close();
+        projectorWindows.delete(participantId);
+        return true;
+    }
+    return false;
+});
+
+ipcMain.handle('projector:isOpen', (event, { participantId }) => {
+    return projectorWindows.has(participantId);
+});
+
+// Relayer les frames video vers les fenêtres projecteur
+ipcMain.on('projector:frame', (event, { participantId, frameDataUrl }) => {
+    const projectorWindow = projectorWindows.get(participantId);
+    if (projectorWindow && !projectorWindow.isDestroyed()) {
+        projectorWindow.webContents.send('projector:displayFrame', { frameDataUrl });
+    }
 });
 
 // ==================== APP LIFECYCLE ====================

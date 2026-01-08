@@ -174,6 +174,20 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
 .footer { padding: var(--space-md) 0; border-top: 1px solid var(--color-border); margin-top: var(--space-lg); }
 .footer-inner { display: flex; align-items: center; justify-content: space-between; font-size: var(--font-size-xs); color: var(--color-text-muted); }
 
+/* Context Menu */
+.context-menu { position: fixed; background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-xs) 0; min-width: 200px; box-shadow: var(--shadow-lg); z-index: 1000; font-size: var(--font-size-sm); }
+.context-menu-item { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); cursor: pointer; transition: background var(--transition-fast); color: var(--color-text); }
+.context-menu-item:hover { background: var(--color-bg-subtle); }
+.context-menu-item.disabled { opacity: 0.5; cursor: not-allowed; }
+.context-menu-item.disabled:hover { background: transparent; }
+.context-menu-separator { height: 1px; background: var(--color-border); margin: var(--space-xs) 0; }
+.context-menu-submenu { position: relative; }
+.context-menu-submenu::after { content: '▶'; position: absolute; right: var(--space-md); font-size: 10px; opacity: 0.5; }
+.context-menu-submenu .context-menu { display: none; position: absolute; left: 100%; top: -4px; }
+.context-menu-submenu:hover .context-menu { display: block; }
+.projector-badge { position: absolute; top: var(--space-sm); right: 50px; background: var(--color-primary-muted); border: 1px solid var(--color-primary); color: var(--color-primary); padding: 4px 10px; border-radius: var(--radius-full); font-size: var(--font-size-xs); font-weight: 600; display: none; }
+.projector-badge.active { display: block; }
+
 @media (max-width: 768px) {
     .navbar-center { display: none; }
     .form-row-2 { grid-template-columns: 1fr; }
@@ -327,6 +341,201 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
         let participants = new Map(), participantStreams = new Map();
         let ndiEnabled = new Map(), ndiCapture = new Map(), ndiAvailable = false;
         let jitterBufferMs = 0; // 0 = direct, pas de buffer
+        let projectorEnabled = new Map(); // participantId -> boolean
+        let availableDisplays = []; // Liste des écrans disponibles
+        
+        // ==================== CONTEXT MENU ====================
+        
+        let activeContextMenu = null;
+        
+        function hideContextMenu() {
+            if (activeContextMenu) {
+                activeContextMenu.remove();
+                activeContextMenu = null;
+            }
+        }
+        
+        document.addEventListener('click', hideContextMenu);
+        document.addEventListener('contextmenu', (e) => {
+            // Fermer le menu si on clique ailleurs
+            if (activeContextMenu && !activeContextMenu.contains(e.target)) {
+                hideContextMenu();
+            }
+        });
+        
+        async function showVideoContextMenu(e, participantId) {
+            e.preventDefault();
+            hideContextMenu();
+            
+            const participant = participants.get(participantId);
+            const displayName = participant?.userId || participantId.slice(0, 8);
+            const hasProjector = projectorEnabled.get(participantId);
+            
+            // Récupérer les écrans disponibles
+            if (window.bridge && window.bridge.projector) {
+                availableDisplays = await window.bridge.projector.getDisplays();
+            }
+            
+            const menu = document.createElement('div');
+            menu.className = 'context-menu';
+            menu.innerHTML = `
+                <div class="context-menu-item" onclick="openProjectorWindowed('${participantId}', '${displayName}')">
+                    🪟 Projecteur fenêtré
+                </div>
+                <div class="context-menu-submenu">
+                    <div class="context-menu-item">🖥️ Projecteur plein écran</div>
+                    <div class="context-menu">
+                        ${availableDisplays.map(d => `
+                            <div class="context-menu-item" onclick="openProjectorFullscreen('${participantId}', '${displayName}', ${d.id})">
+                                ${d.primary ? '⭐ ' : ''}${d.label} (${d.bounds.width}x${d.bounds.height})
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                ${hasProjector ? `
+                <div class="context-menu-separator"></div>
+                <div class="context-menu-item" onclick="closeProjector('${participantId}')">
+                    ❌ Fermer le projecteur
+                </div>
+                ` : ''}
+            `;
+            
+            // Positionner le menu
+            menu.style.left = `${e.clientX}px`;
+            menu.style.top = `${e.clientY}px`;
+            
+            // Ajuster si le menu dépasse de l'écran
+            document.body.appendChild(menu);
+            const rect = menu.getBoundingClientRect();
+            if (rect.right > window.innerWidth) {
+                menu.style.left = `${window.innerWidth - rect.width - 10}px`;
+            }
+            if (rect.bottom > window.innerHeight) {
+                menu.style.top = `${window.innerHeight - rect.height - 10}px`;
+            }
+            
+            activeContextMenu = menu;
+        }
+        
+        // ==================== PROJECTOR FUNCTIONS ====================
+        
+        async function openProjectorWindowed(participantId, displayName) {
+            hideContextMenu();
+            if (!window.bridge || !window.bridge.projector) {
+                log('⚠️ Projecteur non disponible (mode web)', 'warning');
+                return;
+            }
+            
+            try {
+                const result = await window.bridge.projector.open(participantId, displayName, null, true);
+                if (result.success) {
+                    projectorEnabled.set(participantId, true);
+                    updateProjectorBadge(participantId, true);
+                    startProjectorCapture(participantId);
+                    log(`🪟 Projecteur fenêtré ouvert: ${displayName}`, 'info');
+                }
+            } catch (err) {
+                log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');
+            }
+        }
+        
+        async function openProjectorFullscreen(participantId, displayName, displayId) {
+            hideContextMenu();
+            if (!window.bridge || !window.bridge.projector) {
+                log('⚠️ Projecteur non disponible (mode web)', 'warning');
+                return;
+            }
+            
+            try {
+                const result = await window.bridge.projector.open(participantId, displayName, displayId, false);
+                if (result.success) {
+                    projectorEnabled.set(participantId, true);
+                    updateProjectorBadge(participantId, true);
+                    startProjectorCapture(participantId);
+                    log(`🖥️ Projecteur plein écran ouvert: ${displayName}`, 'info');
+                }
+            } catch (err) {
+                log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');
+            }
+        }
+        
+        async function closeProjector(participantId) {
+            hideContextMenu();
+            if (!window.bridge || !window.bridge.projector) return;
+            
+            try {
+                await window.bridge.projector.close(participantId);
+                projectorEnabled.set(participantId, false);
+                updateProjectorBadge(participantId, false);
+                stopProjectorCapture(participantId);
+                const participant = participants.get(participantId);
+                log(`❌ Projecteur fermé: ${participant?.userId || participantId.slice(0, 8)}`, 'info');
+            } catch (err) {
+                log(`❌ Erreur fermeture projecteur: ${err.message}`, 'error');
+            }
+        }
+        
+        function updateProjectorBadge(participantId, active) {
+            const badge = document.getElementById(`projector-badge-${participantId}`);
+            if (badge) {
+                badge.classList.toggle('active', active);
+            }
+        }
+        
+        // Capture pour projecteur (utilise canvas -> dataURL)
+        let projectorCapture = new Map();
+        
+        function startProjectorCapture(participantId) {
+            const container = document.getElementById(`video-${participantId}-combined`);
+            if (!container) return;
+            const video = container.querySelector('video');
+            if (!video || video.readyState < 2) return;
+            
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth || 1280;
+            canvas.height = video.videoHeight || 720;
+            
+            const captureState = { canvas, ctx, video, intervalId: null };
+            
+            function capture() {
+                if (!projectorEnabled.get(participantId)) return;
+                const state = projectorCapture.get(participantId);
+                if (!state) return;
+                
+                // Adapter résolution si changement
+                if (state.video.videoWidth && state.canvas.width !== state.video.videoWidth) {
+                    state.canvas.width = state.video.videoWidth;
+                    state.canvas.height = state.video.videoHeight;
+                }
+                
+                state.ctx.drawImage(state.video, 0, 0);
+                const dataUrl = state.canvas.toDataURL('image/jpeg', 0.85);
+                window.bridge.projector.sendFrame(participantId, dataUrl);
+            }
+            
+            captureState.intervalId = setInterval(capture, 40); // 25fps
+            projectorCapture.set(participantId, captureState);
+        }
+        
+        function stopProjectorCapture(participantId) {
+            const state = projectorCapture.get(participantId);
+            if (state && state.intervalId) {
+                clearInterval(state.intervalId);
+                projectorCapture.delete(participantId);
+            }
+        }
+        
+        // Écouter les fermetures de projecteur depuis le main process
+        if (window.bridge) {
+            window.bridge.on('projector:closed', ({ participantId }) => {
+                projectorEnabled.set(participantId, false);
+                updateProjectorBadge(participantId, false);
+                stopProjectorCapture(participantId);
+                const participant = participants.get(participantId);
+                log(`🪟 Projecteur fermé (externe): ${participant?.userId || participantId?.slice(0, 8)}`, 'info');
+            });
+        }
         
         function updateJitterBuffer(value) {
             jitterBufferMs = parseInt(value) || 0;
@@ -729,10 +938,20 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             const container = document.createElement('div');
             container.className = 'video-card combined';
             container.id = `video-${participantId}-combined`;
+            
+            // Gestionnaire clic droit pour menu contextuel
+            container.addEventListener('contextmenu', (e) => showVideoContextMenu(e, participantId));
+            
             const video = document.createElement('video');
             video.autoplay = true; video.playsInline = true; video.muted = true;
             const ndiBadge = document.createElement('div');
             ndiBadge.className = 'ndi-badge'; ndiBadge.id = `ndi-badge-${participantId}`; ndiBadge.textContent = '📡 NDI';
+            
+            // Badge projecteur
+            const projectorBadge = document.createElement('div');
+            projectorBadge.className = 'projector-badge'; 
+            projectorBadge.id = `projector-badge-${participantId}`; 
+            projectorBadge.textContent = '🪟 Proj';
             const overlayControls = document.createElement('div');
             overlayControls.className = 'video-overlay-controls';
             const ndiBtn = document.createElement('button');
@@ -748,7 +967,7 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             nameLabel.className = 'video-name';
             nameLabel.innerHTML = `<span class="audio-indicator active">🔊</span> ${displayName}`;
             overlay.appendChild(nameLabel);
-            container.appendChild(video); container.appendChild(ndiBadge); container.appendChild(overlayControls); container.appendChild(qualityIndicator); container.appendChild(overlay);
+            container.appendChild(video); container.appendChild(ndiBadge); container.appendChild(projectorBadge); container.appendChild(overlayControls); container.appendChild(qualityIndicator); container.appendChild(overlay);
             video.srcObject = combinedStream;
             video.addEventListener('loadedmetadata', () => {
                 qualityIndicator.textContent = video.videoHeight >= 720 ? 'HD' : 'SD';
