@@ -1,6 +1,12 @@
 /**
  * IVS-NDI Bridge - Main Process
  * 
+ * TODO - Option B (Slot-based naming) pour une gestion encore plus robuste des reconnexions:
+ *   - Créer des slots NDI fixes (IVS-Bridge-1, IVS-Bridge-2, etc.)
+ *   - Mapper les participants aux slots par userId (pas participantId)
+ *   - Si un user revient (même userId, nouveau participantId), réassigner son ancien slot
+ *   - Avantage: noms 100% stables pour les récepteurs OBS/vMix
+ * 
  * Architecture:
  * ┌─────────────────────────────────────────────────────────────┐
  * │                     ELECTRON MAIN                           │
@@ -116,22 +122,30 @@ async function initializeNDI() {
 
 /**
  * Create NDI sender for a participant
+ * Option C: Destroy existing + retry avec délai si collision
  */
-async function createNDISender(participantId, userId) {
-    console.log(`[NDI] createNDISender: participantId=${participantId}, userId=${userId}`);
+async function createNDISender(participantId, userId, retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY_MS = 1500;
+    
+    console.log(`[NDI] createNDISender: participantId=${participantId}, userId=${userId}, retry=${retryCount}`);
     
     if (!grandiose) {
         console.error('[NDI] Grandiose not initialized');
         return null;
     }
 
-    // Close existing sender if any
+    const senderName = `IVS-${userId || participantId.slice(0, 8)}`;
+
+    // Close existing sender if any (même participantId)
     if (ndiSenders.has(participantId)) {
         console.log(`[NDI] Closing existing sender for ${participantId}`);
         const existing = ndiSenders.get(participantId);
         try {
             if (existing.sender && typeof existing.sender.destroy === 'function') {
                 await existing.sender.destroy();
+                // Attendre que NDI libère le nom
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
         } catch (e) {
             console.warn('[NDI] Error destroying sender:', e.message);
@@ -139,8 +153,25 @@ async function createNDISender(participantId, userId) {
         ndiSenders.delete(participantId);
     }
 
+    // Chercher si un autre participant utilise déjà ce nom (reconnexion)
+    for (const [existingId, info] of ndiSenders) {
+        if (info.name === senderName && existingId !== participantId) {
+            console.log(`[NDI] Name collision detected: ${senderName} used by ${existingId}`);
+            console.log(`[NDI] Destroying old sender to reuse name for reconnected user`);
+            try {
+                if (info.sender && typeof info.sender.destroy === 'function') {
+                    await info.sender.destroy();
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            } catch (e) {
+                console.warn('[NDI] Error destroying colliding sender:', e.message);
+            }
+            ndiSenders.delete(existingId);
+            break;
+        }
+    }
+
     try {
-        const senderName = `IVS-${userId || participantId.slice(0, 8)}`;
         console.log(`[NDI] Creating sender: ${senderName}`);
         
         if (typeof grandiose.send !== 'function') {
@@ -171,6 +202,7 @@ async function createNDISender(participantId, userId) {
         ndiSenders.set(participantId, {
             sender,
             name: senderName,
+            displayName: userId || participantId.slice(0, 8),
             frameCount: 0,
             startTime: Date.now(),
             lastFrameTime: Date.now(),
@@ -183,6 +215,15 @@ async function createNDISender(participantId, userId) {
 
     } catch (error) {
         console.error(`[NDI] Failed to create sender:`, error.message);
+        
+        // Si collision de nom (sender fantôme), retry après délai
+        if (retryCount < MAX_RETRIES && 
+            (error.message.includes('already') || error.message.includes('exists') || error.message.includes('failed'))) {
+            console.log(`[NDI] Retrying in ${RETRY_DELAY_MS}ms... (attempt ${retryCount + 1}/${MAX_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+            return createNDISender(participantId, userId, retryCount + 1);
+        }
+        
         console.error(`[NDI] Stack:`, error.stack);
         return null;
     }
