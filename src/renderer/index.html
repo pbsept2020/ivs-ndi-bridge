@@ -892,15 +892,13 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
         }
 
         function removeIndividualVideoContainers(participantId) {
-            ['audio', 'video'].forEach(type => { 
-                const id = `video-${participantId}-${type}`;
-                const el = document.getElementById(id); 
-                if (el) {
-                    console.log(`[Cleanup] Removing ${id}`);
-                    el.remove(); 
-                } else {
-                    console.log(`[Cleanup] Not found: ${id}`);
-                }
+            // Supprimer TOUS les éléments vidéo de ce participant (audio, video, et tout autre)
+            const grid = document.getElementById('videoGrid');
+            const toRemove = grid.querySelectorAll(`[id^="video-${participantId}-"]`);
+            console.log(`[Cleanup] Found ${toRemove.length} elements for ${participantId.slice(0,8)}`);
+            toRemove.forEach(el => {
+                console.log(`[Cleanup] Removing: ${el.id}`);
+                el.remove();
             });
         }
 
