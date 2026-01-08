@@ -7,6 +7,22 @@
  *   - Si un user revient (même userId, nouveau participantId), réassigner son ancien slot
  *   - Avantage: noms 100% stables pour les récepteurs OBS/vMix
  * 
+ * TODO - Phase 2 GPU (exploitation Apple Silicon) - Estimation: 4-5 jours
+ *   Phase 2a (1j): Pipeline Metal standalone
+ *     - Shader NV12→UYVY avec upsampling bilinéaire chroma 4:2:0→4:2:2
+ *     - CVMetalTextureCache pour import IOSurface sans copie
+ *     - MTLBuffer(storageModeShared) pour sortie GPU→CPU
+ *   Phase 2b (2-3j): Module natif Electron (C++/ObjC)
+ *     - Hook WebRTC pour intercepter RTCCVPixelBuffer avant JS
+ *     - CVPixelBufferGetIOSurface() pour accès zero-copy
+ *     - node-gyp + binding.gyp pour build arm64
+ *   Phase 2c (0.5j): Intégration + double-buffering
+ *     - 2 MTLBuffers alternants pour éviter stalls GPU
+ *     - Connexion pipeline Metal → Grandiose NDI
+ *   Phase 2d (0.5j): Tests perf
+ *   Gains attendus: CPU 40%→5%, latence 40ms→5ms, support 60fps 1080p
+ *   Réf: MCP ivs-ndi-apple pour détails techniques et code examples
+ * 
  * Architecture:
  * ┌─────────────────────────────────────────────────────────────┐
  * │                     ELECTRON MAIN                           │
