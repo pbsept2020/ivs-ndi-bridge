@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://web-broadcast.live-video.net; style-src 'self' 'unsafe-inline'; connect-src https://*.amazonaws.com wss://*.live-video.net https://*.live-video.net;">
     <title>Projecteur IVS</title>
+    <script src="https://web-broadcast.live-video.net/1.24.0/amazon-ivs-web-broadcast.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
@@ -11,9 +13,7 @@
             height: 100%;
             background: #000;
             overflow: hidden;
-            cursor: none;
         }
-        body:hover { cursor: default; }
         body.idle { cursor: none; }
         
         #videoContainer {
@@ -24,22 +24,24 @@
             justify-content: center;
         }
         
-        #projectorImage {
+        #projectorVideo {
             max-width: 100%;
             max-height: 100%;
-            width: auto;
-            height: auto;
+            width: 100%;
+            height: 100%;
             object-fit: contain;
+            background: #000;
         }
         
         #info {
             position: fixed;
             top: 20px;
             left: 20px;
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(8px);
             color: #fff;
-            padding: 10px 16px;
-            border-radius: 8px;
+            padding: 12px 18px;
+            border-radius: 10px;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             font-size: 13px;
             opacity: 0;
@@ -47,10 +49,11 @@
             pointer-events: none;
             z-index: 100;
         }
-        body:hover #info { opacity: 1; }
+        body:not(.idle) #info { opacity: 1; }
         
-        #info .name { font-weight: 600; color: #00d4aa; }
-        #info .hint { margin-top: 6px; font-size: 11px; color: #888; }
+        #info .name { font-weight: 600; color: #00d4aa; font-size: 15px; }
+        #info .stats { margin-top: 6px; font-size: 11px; color: #aaa; }
+        #info .hint { margin-top: 8px; font-size: 11px; color: #666; border-top: 1px solid #333; padding-top: 8px; }
         
         #waiting {
             position: absolute;
@@ -62,47 +65,73 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         }
         #waiting .spinner {
-            width: 40px;
-            height: 40px;
+            width: 48px;
+            height: 48px;
             border: 3px solid #333;
             border-top-color: #00d4aa;
             border-radius: 50%;
             animation: spin 1s linear infinite;
             margin: 0 auto 16px;
         }
+        #waiting .status { font-size: 14px; }
         @keyframes spin { to { transform: rotate(360deg); } }
         
         #waiting.hidden { display: none; }
+        
+        #error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #f44;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            display: none;
+        }
+        #error.visible { display: block; }
     </style>
 </head>
 <body>
     <div id="videoContainer">
-        <img id="projectorImage" alt="Flux vidéo">
+        <video id="projectorVideo" autoplay playsinline></video>
     </div>
     
     <div id="waiting">
         <div class="spinner"></div>
-        <div>En attente du flux vidéo...</div>
+        <div class="status" id="waitingStatus">Connexion au stage...</div>
+    </div>
+    
+    <div id="error">
+        <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+        <div id="errorMessage">Erreur de connexion</div>
     </div>
     
     <div id="info">
         <div class="name" id="displayName">Source IVS</div>
+        <div class="stats" id="statsInfo">--</div>
         <div class="hint">Appuyez sur <kbd>Échap</kbd> pour fermer</div>
     </div>
 
     <script>
         // Récupérer les paramètres de l'URL
         const params = new URLSearchParams(window.location.search);
-        const participantId = params.get('participantId');
+        const targetParticipantId = params.get('participantId');
         const displayName = params.get('displayName') || 'Source IVS';
+        const token = params.get('token');
         
         document.getElementById('displayName').textContent = displayName;
         document.title = `Projecteur - ${displayName}`;
         
-        const image = document.getElementById('projectorImage');
+        const video = document.getElementById('projectorVideo');
         const waiting = document.getElementById('waiting');
-        let frameCount = 0;
+        const waitingStatus = document.getElementById('waitingStatus');
+        const errorDiv = document.getElementById('error');
+        const errorMessage = document.getElementById('errorMessage');
+        const statsInfo = document.getElementById('statsInfo');
+        
+        let stage = null;
         let idleTimeout = null;
+        let connected = false;
         
         // Masquer le curseur après inactivité
         function resetIdleTimer() {
@@ -112,35 +141,153 @@
                 document.body.classList.add('idle');
             }, 2000);
         }
-        
         document.addEventListener('mousemove', resetIdleTimer);
+        document.addEventListener('click', resetIdleTimer);
         resetIdleTimer();
         
-        // Réception des frames
-        if (window.bridge && window.bridge.projector) {
-            window.bridge.projector.onFrame(({ frameDataUrl }) => {
-                if (frameDataUrl) {
-                    image.src = frameDataUrl;
-                    frameCount++;
-                    
-                    if (frameCount === 1) {
-                        waiting.classList.add('hidden');
-                        console.log('[Projector] First frame received');
-                    }
-                }
-            });
-            console.log('[Projector] Ready, waiting for frames...');
-        } else {
-            console.error('[Projector] Bridge not available');
-            waiting.innerHTML = '<div style="color: #f44;">Erreur: Bridge non disponible</div>';
+        function showError(msg) {
+            waiting.classList.add('hidden');
+            errorMessage.textContent = msg;
+            errorDiv.classList.add('visible');
         }
+        
+        function updateStats() {
+            if (video.videoWidth && video.videoHeight) {
+                statsInfo.textContent = `${video.videoWidth}×${video.videoHeight}`;
+            }
+        }
+        
+        async function connectToStage() {
+            if (!token) {
+                showError('Token manquant');
+                return;
+            }
+            
+            if (typeof IVSBroadcastClient === 'undefined') {
+                showError('SDK IVS non chargé');
+                return;
+            }
+            
+            try {
+                waitingStatus.textContent = 'Connexion au stage...';
+                
+                const strategy = {
+                    stageStreamsToPublish: () => [],
+                    shouldPublishParticipant: () => false,
+                    shouldSubscribeToParticipant: (participant) => {
+                        // Ne s'abonner qu'au participant ciblé
+                        if (participant.id === targetParticipantId) {
+                            return IVSBroadcastClient.SubscribeType.AUDIO_VIDEO;
+                        }
+                        return IVSBroadcastClient.SubscribeType.NONE;
+                    }
+                };
+                
+                stage = new IVSBroadcastClient.Stage(token, strategy);
+                
+                stage.on(IVSBroadcastClient.StageEvents.STAGE_CONNECTION_STATE_CHANGED, (state) => {
+                    console.log('[Projector] Connection state:', state);
+                    if (state === 'CONNECTED') {
+                        connected = true;
+                        waitingStatus.textContent = 'Connecté, en attente du flux...';
+                    } else if (state === 'DISCONNECTED') {
+                        if (connected) {
+                            showError('Déconnecté du stage');
+                        }
+                    }
+                });
+                
+                stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
+                    console.log('[Projector] Streams added:', participant.id, streams.length);
+                    
+                    // Vérifier si c'est notre participant cible
+                    if (participant.id !== targetParticipantId) {
+                        console.log('[Projector] Ignoring non-target participant');
+                        return;
+                    }
+                    
+                    // Combiner les tracks audio et vidéo
+                    const combinedStream = new MediaStream();
+                    
+                    streams.forEach(stream => {
+                        const track = stream.mediaStreamTrack;
+                        if (track) {
+                            combinedStream.addTrack(track);
+                            console.log('[Projector] Added track:', track.kind);
+                        }
+                    });
+                    
+                    if (combinedStream.getTracks().length > 0) {
+                        video.srcObject = combinedStream;
+                        video.muted = false; // Audio activé dans le projecteur
+                        
+                        video.play().then(() => {
+                            console.log('[Projector] Video playing');
+                            waiting.classList.add('hidden');
+                            updateStats();
+                        }).catch(err => {
+                            console.warn('[Projector] Autoplay blocked, muting...');
+                            video.muted = true;
+                            video.play().then(() => {
+                                waiting.classList.add('hidden');
+                                updateStats();
+                            });
+                        });
+                    }
+                });
+                
+                stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT, (participant) => {
+                    if (participant.id === targetParticipantId) {
+                        console.log('[Projector] Target participant left');
+                        showError('Le participant a quitté le stage');
+                    }
+                });
+                
+                stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED, (participant, streams) => {
+                    if (participant.id === targetParticipantId) {
+                        console.log('[Projector] Target streams removed');
+                        video.srcObject = null;
+                        waitingStatus.textContent = 'Flux interrompu...';
+                        waiting.classList.remove('hidden');
+                    }
+                });
+                
+                stage.on(IVSBroadcastClient.StageEvents.ERROR, (error) => {
+                    console.error('[Projector] Stage error:', error);
+                    showError(error.message || 'Erreur de connexion');
+                });
+                
+                await stage.join();
+                console.log('[Projector] Joined stage');
+                
+            } catch (error) {
+                console.error('[Projector] Connection error:', error);
+                showError(error.message || 'Impossible de se connecter');
+            }
+        }
+        
+        // Mettre à jour les stats périodiquement
+        setInterval(updateStats, 2000);
         
         // Raccourci clavier Escape
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
+                if (stage) {
+                    stage.leave().catch(() => {});
+                }
                 window.close();
             }
         });
+        
+        // Cleanup à la fermeture
+        window.addEventListener('beforeunload', () => {
+            if (stage) {
+                stage.leave().catch(() => {});
+            }
+        });
+        
+        // Démarrer la connexion
+        connectToStage();
     </script>
 </body>
 </html>

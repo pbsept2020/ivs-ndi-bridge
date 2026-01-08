@@ -416,7 +416,7 @@ ipcMain.handle('projector:getDisplays', () => {
     }));
 });
 
-ipcMain.handle('projector:open', (event, { participantId, displayName, displayId, windowed }) => {
+ipcMain.handle('projector:open', (event, { participantId, displayName, displayId, windowed, token }) => {
     // Fermer fenêtre existante si présente
     if (projectorWindows.has(participantId)) {
         projectorWindows.get(participantId).close();
@@ -463,9 +463,10 @@ ipcMain.handle('projector:open', (event, { participantId, displayName, displayId
 
     const projectorWindow = new BrowserWindow(windowOptions);
     
-    // Charger la page projecteur
+    // Charger la page projecteur avec le token pour connexion directe WebRTC
+    // Le projecteur se connecte lui-même au stage = flux vidéo direct sans transcodage
     projectorWindow.loadFile(path.join(__dirname, 'renderer', 'projector.html'), {
-        query: { participantId, displayName }
+        query: { participantId, displayName, token: token || '' }
     });
 
     projectorWindow.on('closed', () => {

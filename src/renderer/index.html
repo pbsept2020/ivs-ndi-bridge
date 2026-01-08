@@ -426,13 +426,17 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                 return;
             }
             
+            if (!currentToken) {
+                log('❌ Token requis pour le projecteur', 'error');
+                return;
+            }
+            
             try {
-                const result = await window.bridge.projector.open(participantId, displayName, null, true);
+                const result = await window.bridge.projector.open(participantId, displayName, null, true, currentToken);
                 if (result.success) {
                     projectorEnabled.set(participantId, true);
                     updateProjectorBadge(participantId, true);
-                    startProjectorCapture(participantId);
-                    log(`🪟 Projecteur fenêtré ouvert: ${displayName}`, 'info');
+                    log(`🪟 Projecteur fenêtré ouvert: ${displayName} (WebRTC direct)`, 'info');
                 }
             } catch (err) {
                 log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');
@@ -446,13 +450,17 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                 return;
             }
             
+            if (!currentToken) {
+                log('❌ Token requis pour le projecteur', 'error');
+                return;
+            }
+            
             try {
-                const result = await window.bridge.projector.open(participantId, displayName, displayId, false);
+                const result = await window.bridge.projector.open(participantId, displayName, displayId, false, currentToken);
                 if (result.success) {
                     projectorEnabled.set(participantId, true);
                     updateProjectorBadge(participantId, true);
-                    startProjectorCapture(participantId);
-                    log(`🖥️ Projecteur plein écran ouvert: ${displayName}`, 'info');
+                    log(`🖥️ Projecteur plein écran ouvert: ${displayName} (WebRTC direct)`, 'info');
                 }
             } catch (err) {
                 log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');
@@ -467,7 +475,6 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                 await window.bridge.projector.close(participantId);
                 projectorEnabled.set(participantId, false);
                 updateProjectorBadge(participantId, false);
-                stopProjectorCapture(participantId);
                 const participant = participants.get(participantId);
                 log(`❌ Projecteur fermé: ${participant?.userId || participantId.slice(0, 8)}`, 'info');
             } catch (err) {
@@ -482,56 +489,11 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             }
         }
         
-        // Capture pour projecteur (utilise canvas -> dataURL)
-        let projectorCapture = new Map();
-        
-        function startProjectorCapture(participantId) {
-            const container = document.getElementById(`video-${participantId}-combined`);
-            if (!container) return;
-            const video = container.querySelector('video');
-            if (!video || video.readyState < 2) return;
-            
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            canvas.width = video.videoWidth || 1280;
-            canvas.height = video.videoHeight || 720;
-            
-            const captureState = { canvas, ctx, video, intervalId: null };
-            
-            function capture() {
-                if (!projectorEnabled.get(participantId)) return;
-                const state = projectorCapture.get(participantId);
-                if (!state) return;
-                
-                // Adapter résolution si changement
-                if (state.video.videoWidth && state.canvas.width !== state.video.videoWidth) {
-                    state.canvas.width = state.video.videoWidth;
-                    state.canvas.height = state.video.videoHeight;
-                }
-                
-                state.ctx.drawImage(state.video, 0, 0);
-                const dataUrl = state.canvas.toDataURL('image/jpeg', 0.85);
-                window.bridge.projector.sendFrame(participantId, dataUrl);
-            }
-            
-            captureState.intervalId = setInterval(capture, 40); // 25fps
-            projectorCapture.set(participantId, captureState);
-        }
-        
-        function stopProjectorCapture(participantId) {
-            const state = projectorCapture.get(participantId);
-            if (state && state.intervalId) {
-                clearInterval(state.intervalId);
-                projectorCapture.delete(participantId);
-            }
-        }
-        
         // Écouter les fermetures de projecteur depuis le main process
         if (window.bridge) {
             window.bridge.on('projector:closed', ({ participantId }) => {
                 projectorEnabled.set(participantId, false);
                 updateProjectorBadge(participantId, false);
-                stopProjectorCapture(participantId);
                 const participant = participants.get(participantId);
                 log(`🪟 Projecteur fermé (externe): ${participant?.userId || participantId?.slice(0, 8)}`, 'info');
             });

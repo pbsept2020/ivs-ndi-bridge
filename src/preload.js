@@ -48,20 +48,12 @@ contextBridge.exposeInMainWorld('bridge', {
     // Projector Control
     projector: {
         getDisplays: () => ipcRenderer.invoke('projector:getDisplays'),
-        open: (participantId, displayName, displayId, windowed) => 
-            ipcRenderer.invoke('projector:open', { participantId, displayName, displayId, windowed }),
+        open: (participantId, displayName, displayId, windowed, token) => 
+            ipcRenderer.invoke('projector:open', { participantId, displayName, displayId, windowed, token }),
         close: (participantId) => 
             ipcRenderer.invoke('projector:close', { participantId }),
         isOpen: (participantId) => 
-            ipcRenderer.invoke('projector:isOpen', { participantId }),
-        // Envoyer une frame au projecteur (via data URL)
-        sendFrame: (participantId, frameDataUrl) => {
-            ipcRenderer.send('projector:frame', { participantId, frameDataUrl });
-        },
-        // Réception des frames dans la fenêtre projecteur
-        onFrame: (callback) => {
-            ipcRenderer.on('projector:displayFrame', (event, data) => callback(data));
-        }
+            ipcRenderer.invoke('projector:isOpen', { participantId })
     },
 
     // Event listeners for NDI status updates
