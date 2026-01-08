@@ -892,7 +892,16 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
         }
 
         function removeIndividualVideoContainers(participantId) {
-            ['audio', 'video'].forEach(type => { const el = document.getElementById(`video-${participantId}-${type}`); if (el) el.remove(); });
+            ['audio', 'video'].forEach(type => { 
+                const id = `video-${participantId}-${type}`;
+                const el = document.getElementById(id); 
+                if (el) {
+                    console.log(`[Cleanup] Removing ${id}`);
+                    el.remove(); 
+                } else {
+                    console.log(`[Cleanup] Not found: ${id}`);
+                }
+            });
         }
 
         function createCombinedVideoElement(participantId, combinedStream) {
