@@ -52,8 +52,8 @@ contextBridge.exposeInMainWorld('bridge', {
     // Projector Control
     projector: {
         getDisplays: () => ipcRenderer.invoke('projector:getDisplays'),
-        open: (participantId, displayName, displayId, windowed, token) => 
-            ipcRenderer.invoke('projector:open', { participantId, displayName, displayId, windowed, token }),
+        open: (participantId, displayName, displayId, windowed, token, borderlessFullscreen = false) => 
+            ipcRenderer.invoke('projector:open', { participantId, displayName, displayId, windowed, borderlessFullscreen, token }),
         close: (participantId) => 
             ipcRenderer.invoke('projector:close', { participantId }),
         isOpen: (participantId) => 

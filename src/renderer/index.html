@@ -418,8 +418,22 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                     🪟 Projecteur fenêtré
                 </div>
                 <div class="context-menu-submenu">
-                    <div class="context-menu-item">🖥️ Projecteur plein écran</div>
+                    <div class="context-menu-item">🖥️ Borderless fullscreen ⭐</div>
                     <div class="context-menu">
+                        ${availableDisplays.map(d => `
+                            <div class="context-menu-item" onclick="openProjectorBorderless('${participantId}', '${displayName}', ${d.id})">
+                                ${d.primary ? '⭐ ' : ''}${d.label} (${d.bounds.width}x${d.bounds.height})
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="context-menu-submenu">
+                    <div class="context-menu-item" style="opacity: 0.6;">🖥️ Fullscreen natif ⚠️</div>
+                    <div class="context-menu">
+                        <div class="context-menu-item disabled" style="font-size: 11px; color: var(--color-warning);">
+                            ⚠️ Peut freeze avec NDI!
+                        </div>
+                        <div class="context-menu-separator"></div>
                         ${availableDisplays.map(d => `
                             <div class="context-menu-item" onclick="openProjectorFullscreen('${participantId}', '${displayName}', ${d.id})">
                                 ${d.primary ? '⭐ ' : ''}${d.label} (${d.bounds.width}x${d.bounds.height})
@@ -478,6 +492,31 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             }
         }
         
+        async function openProjectorBorderless(participantId, displayName, displayId) {
+            hideContextMenu();
+            if (!window.bridge || !window.bridge.projector) {
+                log('⚠️ Projecteur non disponible (mode web)', 'warning');
+                return;
+            }
+            
+            if (!currentToken) {
+                log('❌ Token requis pour le projecteur', 'error');
+                return;
+            }
+            
+            try {
+                // borderlessFullscreen = true pour contourner le bug NDI fullscreen
+                const result = await window.bridge.projector.open(participantId, displayName, displayId, false, currentToken, true);
+                if (result.success) {
+                    projectorEnabled.set(participantId, true);
+                    updateProjectorBadge(participantId, true);
+                    log(`🖥️ Borderless fullscreen: ${displayName} (workaround NDI freeze)`, 'success');
+                }
+            } catch (err) {
+                log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');
+            }
+        }
+        
         async function openProjectorFullscreen(participantId, displayName, displayId) {
             hideContextMenu();
             if (!window.bridge || !window.bridge.projector) {
@@ -491,11 +530,12 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             }
             
             try {
-                const result = await window.bridge.projector.open(participantId, displayName, displayId, false, currentToken);
+                // borderlessFullscreen = false pour fullscreen natif (peut freeze!)
+                const result = await window.bridge.projector.open(participantId, displayName, displayId, false, currentToken, false);
                 if (result.success) {
                     projectorEnabled.set(participantId, true);
                     updateProjectorBadge(participantId, true);
-                    log(`🖥️ Projecteur plein écran ouvert: ${displayName} (WebRTC direct)`, 'info');
+                    log(`🖥️ Fullscreen natif: ${displayName} (⚠️ peut freeze avec NDI)`, 'warning');
                 }
             } catch (err) {
                 log(`❌ Erreur ouverture projecteur: ${err.message}`, 'error');

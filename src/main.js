@@ -548,7 +548,7 @@ ipcMain.handle('projector:getDisplays', () => {
     }));
 });
 
-ipcMain.handle('projector:open', (event, { participantId, displayName, displayId, windowed, token }) => {
+ipcMain.handle('projector:open', (event, { participantId, displayName, displayId, windowed, borderlessFullscreen, token }) => {
     // Fermer fenêtre existante si présente
     if (projectorWindows.has(participantId)) {
         projectorWindows.get(participantId).close();
@@ -566,15 +566,16 @@ ipcMain.handle('projector:open', (event, { participantId, displayName, displayId
     };
 
     if (windowed) {
-        // Mode fenêtré
+        // Mode fenêtré classique
         windowOptions.width = 960;
         windowOptions.height = 540;
         windowOptions.minWidth = 320;
         windowOptions.minHeight = 180;
         windowOptions.frame = true;
         windowOptions.resizable = true;
-    } else {
-        // Mode plein écran sur écran spécifié
+    } else if (borderlessFullscreen) {
+        // Mode "borderless fullscreen" - fenêtre sans bordure maximisée
+        // Contourne le bug NDI freeze en fullscreen natif macOS
         const displays = screen.getAllDisplays();
         const targetDisplay = displayId 
             ? displays.find(d => d.id === displayId) 
@@ -588,9 +589,34 @@ ipcMain.handle('projector:open', (event, { participantId, displayName, displayId
         }
         windowOptions.frame = false;
         windowOptions.resizable = false;
-        windowOptions.fullscreen = false; // On évite le fullscreen natif macOS (bugs connus)
+        windowOptions.movable = false;
+        windowOptions.fullscreen = false;  // PAS de fullscreen natif!
+        windowOptions.simpleFullscreen = false;
+        windowOptions.alwaysOnTop = true;
+        windowOptions.skipTaskbar = true;
+        windowOptions.hasShadow = false;
+        // Éviter que la fenêtre soit dans un Space séparé
+        windowOptions.visibleOnAllWorkspaces = false;
+        console.log(`[Projector] Borderless fullscreen mode on display ${targetDisplay?.id} (${targetDisplay?.bounds.width}x${targetDisplay?.bounds.height})`);
+    } else {
+        // Mode plein écran natif (peut freeze avec NDI!)
+        const displays = screen.getAllDisplays();
+        const targetDisplay = displayId 
+            ? displays.find(d => d.id === displayId) 
+            : screen.getPrimaryDisplay();
+        
+        if (targetDisplay) {
+            windowOptions.x = targetDisplay.bounds.x;
+            windowOptions.y = targetDisplay.bounds.y;
+            windowOptions.width = targetDisplay.bounds.width;
+            windowOptions.height = targetDisplay.bounds.height;
+        }
+        windowOptions.frame = false;
+        windowOptions.resizable = false;
+        windowOptions.fullscreen = false;
         windowOptions.simpleFullscreen = true;
         windowOptions.alwaysOnTop = true;
+        console.log(`[Projector] WARNING: Native fullscreen mode - may freeze with NDI receivers`);
     }
 
     const projectorWindow = new BrowserWindow(windowOptions);
@@ -617,9 +643,10 @@ ipcMain.handle('projector:open', (event, { participantId, displayName, displayId
     });
 
     projectorWindows.set(participantId, projectorWindow);
-    console.log(`[Projector] Opened for ${displayName} (windowed: ${windowed})`);
+    const modeDesc = windowed ? 'windowed' : (borderlessFullscreen ? 'borderless-fullscreen' : 'native-fullscreen');
+    console.log(`[Projector] Opened for ${displayName} (${modeDesc})`);
     
-    return { success: true, windowed };
+    return { success: true, windowed, borderlessFullscreen };
 });
 
 ipcMain.handle('projector:close', (event, { participantId }) => {
