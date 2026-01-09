@@ -65,6 +65,24 @@ const CONFIG = {
     }
 };
 
+// Horloge commune pour synchronisation A/V NDI (en 100ns units)
+// Initialisée au premier frame envoyé pour chaque sender
+const ndiClocks = new Map(); // participantId -> { startTime: BigInt (hrtime), startTimestamp: number (Date.now) }
+
+function getNDITimecode(participantId) {
+    if (!ndiClocks.has(participantId)) {
+        ndiClocks.set(participantId, {
+            startTime: process.hrtime.bigint(),
+            startTimestamp: Date.now()
+        });
+    }
+    const clock = ndiClocks.get(participantId);
+    // Temps écoulé en nanosecondes depuis le début
+    const elapsedNs = process.hrtime.bigint() - clock.startTime;
+    // Convertir en unités de 100ns (ce que NDI attend)
+    return elapsedNs / BigInt(100);
+}
+
 /**
  * Create main application window
  */
@@ -220,8 +238,11 @@ async function createNDISender(participantId, userId, retryCount = 0) {
             name: senderName,
             displayName: userId || participantId.slice(0, 8),
             frameCount: 0,
+            audioFrameCount: 0,
+            audioSampleCount: 0,
             startTime: Date.now(),
             lastFrameTime: Date.now(),
+            lastAudioTime: Date.now(),
             width: 0,
             height: 0
         });
@@ -280,24 +301,22 @@ async function sendNDIFrame(participantId, frameData) {
         // RGBX = RGBA avec hint que alpha=255 (pas de compositing)
         const fourCC = grandiose.FOURCC_RGBX || 1480738642;
 
-        // Timecode incrémental basé sur frame count (100ns units comme NDI attend)
-        // 10,000,000 = 1 seconde en unités de 100ns
-        const frameTime100ns = BigInt(senderInfo.frameCount) * BigInt(400000);  // 40ms par frame = 400000 * 100ns
+        // Timecode synchronisé avec l'audio via horloge commune
+        const timecode = getNDITimecode(participantId);
 
         // Create video frame object
-        // Frame rate aligné avec la source IVS (~25 fps)
         const videoFrame = {
             type: 'video',
             data: buffer,
             xres: width,
             yres: height,
-            frameRateN: 25000,
-            frameRateD: 1000,  // 25 fps exact
+            frameRateN: 30000,
+            frameRateD: 1000,  // 30 fps
             fourCC: fourCC,
-            lineStrideBytes: width * 4,  // BGRA = 4 bytes per pixel
+            lineStrideBytes: width * 4,  // RGBX = 4 bytes per pixel
             frameFormatType: grandiose.FORMAT_TYPE_PROGRESSIVE || 1,
             pictureAspectRatio: width / height,
-            timecode: frameTime100ns  // Timecode incrémental en 100ns units
+            timecode: timecode  // Timecode synchronisé A/V
         };
 
         // Send frame - video() returns a Promise
@@ -330,6 +349,97 @@ async function sendNDIFrame(participantId, frameData) {
 }
 
 /**
+ * Send audio frame to NDI
+ * Float32 planar format from AudioWorklet
+ * NDI audio format: FLTp (Float32 planar) - channels stored separately
+ */
+async function sendNDIAudioFrame(participantId, left, right, sampleRate = 48000) {
+    const senderInfo = ndiSenders.get(participantId);
+    if (!senderInfo) {
+        return false;
+    }
+
+    try {
+        const { sender } = senderInfo;
+        
+        // Validate input - should be Float32Array from AudioWorklet
+        if (!left || !right) {
+            return false;
+        }
+
+        const noSamples = left.length || left.byteLength / 4;
+        const noChannels = 2;
+        
+        // Channel stride = bytes per channel = samples * 4 (Float32)
+        const channelStrideBytes = noSamples * 4;
+        
+        // Create planar buffer: [L0,L1,...Ln,R0,R1,...Rn]
+        // Total size = 2 channels * samples * 4 bytes
+        const buffer = Buffer.alloc(channelStrideBytes * noChannels);
+        
+        // Copy left channel
+        if (Buffer.isBuffer(left)) {
+            left.copy(buffer, 0);
+        } else if (left instanceof Float32Array) {
+            Buffer.from(left.buffer, left.byteOffset, left.byteLength).copy(buffer, 0);
+        } else if (left.buffer) {
+            Buffer.from(left.buffer).copy(buffer, 0);
+        }
+        
+        // Copy right channel
+        if (Buffer.isBuffer(right)) {
+            right.copy(buffer, channelStrideBytes);
+        } else if (right instanceof Float32Array) {
+            Buffer.from(right.buffer, right.byteOffset, right.byteLength).copy(buffer, channelStrideBytes);
+        } else if (right.buffer) {
+            Buffer.from(right.buffer).copy(buffer, channelStrideBytes);
+        }
+
+        // FourCC for Float32 planar audio
+        // 'FLTp' = 0x70544c46 in little-endian
+        const FOURCC_FLTp = 0x70544c46;
+
+        // Timecode synchronisé avec la vidéo via horloge commune
+        const timecode = getNDITimecode(participantId);
+
+        // Audio frame object matching grandiose_send.cc expectations
+        const audioFrame = {
+            sampleRate: sampleRate,
+            noChannels: noChannels,
+            noSamples: noSamples,
+            channelStrideBytes: channelStrideBytes,
+            fourCC: FOURCC_FLTp,
+            data: buffer,
+            timecode: timecode  // Timecode synchronisé A/V
+        };
+
+        // Send audio frame
+        await sender.audio(audioFrame);
+
+        // Update stats
+        senderInfo.audioFrameCount++;
+        senderInfo.audioSampleCount += noSamples;
+        senderInfo.lastAudioTime = Date.now();
+
+        // Log periodically (every ~10 seconds at 48kHz with 1024 sample buffers)
+        if (senderInfo.audioFrameCount % 500 === 0) {
+            const elapsed = (Date.now() - senderInfo.startTime) / 1000;
+            const audioFps = Math.round(senderInfo.audioFrameCount / elapsed);
+            console.log(`[NDI Audio] ${senderInfo.name}: ${senderInfo.audioSampleCount} samples, ${audioFps} buffers/s, ${sampleRate}Hz`);
+        }
+
+        return true;
+
+    } catch (error) {
+        if (senderInfo.audioFrameCount === 0) {
+            console.error(`[NDI Audio] Send error (first frame):`, error.message);
+            console.error('[NDI Audio] Sender.audio type:', typeof senderInfo.sender?.audio);
+        }
+        return false;
+    }
+}
+
+/**
  * Remove NDI sender for a participant
  */
 async function removeNDISender(participantId) {
@@ -347,6 +457,7 @@ async function removeNDISender(participantId) {
             console.warn('[NDI] Error disposing sender:', e.message);
         }
         ndiSenders.delete(participantId);
+        ndiClocks.delete(participantId);  // Nettoyer l'horloge A/V
     }
 }
 
@@ -409,6 +520,11 @@ ipcMain.handle('ndi:status', () => {
 // Frame data - using 'on' for high-frequency messages (not invoke)
 ipcMain.on('ndi:frame', (event, { participantId, frameData }) => {
     sendNDIFrame(participantId, frameData);
+});
+
+// Audio frame data - Float32 planar from AudioWorklet
+ipcMain.on('ndi:audioFrame', (event, { participantId, left, right, sampleRate }) => {
+    sendNDIAudioFrame(participantId, left, right, sampleRate);
 });
 
 ipcMain.handle('config:get', () => {
@@ -598,6 +714,19 @@ const menuTemplate = [
             { role: 'reload' },
             { role: 'forceReload' },
             { role: 'toggleDevTools' },
+            { type: 'separator' },
+            {
+                label: 'WebRTC Internals',
+                accelerator: 'CmdOrCtrl+Shift+W',
+                click: () => {
+                    const webrtcWindow = new BrowserWindow({
+                        width: 1200,
+                        height: 800,
+                        title: 'WebRTC Internals'
+                    });
+                    webrtcWindow.loadURL('chrome://webrtc-internals');
+                }
+            },
             { type: 'separator' },
             { role: 'togglefullscreen' }
         ]

@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('bridge', {
         // Send frame data (Phase 1 - with copies)
         sendFrame: (participantId, frameData) => {
             ipcRenderer.send('ndi:frame', { participantId, frameData });
+        },
+        // Send audio frame (Float32 planar)
+        sendAudioFrame: (participantId, left, right, sampleRate) => {
+            ipcRenderer.send('ndi:audioFrame', { participantId, left, right, sampleRate });
         }
     },
 

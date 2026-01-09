@@ -132,6 +132,8 @@
         let stage = null;
         let idleTimeout = null;
         let connected = false;
+        let statsInterval = null;
+        let peerConnection = null;  // Pour accéder aux stats WebRTC
         
         // Masquer le curseur après inactivité
         function resetIdleTimer() {
@@ -153,7 +155,23 @@
         
         function updateStats() {
             if (video.videoWidth && video.videoHeight) {
-                statsInfo.textContent = `${video.videoWidth}×${video.videoHeight}`;
+                const basicStats = `${video.videoWidth}×${video.videoHeight}`;
+                
+                // Récupérer les stats WebRTC si disponibles
+                if (video.srcObject && video.srcObject.getTracks) {
+                    const videoTrack = video.srcObject.getVideoTracks()[0];
+                    const audioTrack = video.srcObject.getAudioTracks()[0];
+                    
+                    if (videoTrack) {
+                        const settings = videoTrack.getSettings();
+                        const fps = settings.frameRate ? Math.round(settings.frameRate) : '?';
+                        statsInfo.innerHTML = `${basicStats} @ ${fps}fps<br><span style="color:#888;font-size:10px">V: ${videoTrack.readyState} | A: ${audioTrack?.readyState || 'N/A'}</span>`;
+                    } else {
+                        statsInfo.textContent = basicStats;
+                    }
+                } else {
+                    statsInfo.textContent = basicStats;
+                }
             }
         }
         

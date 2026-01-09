@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://web-broadcast.live-video.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://*.amazonaws.com wss://*.live-video.net https://*.live-video.net;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: https://web-broadcast.live-video.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://*.amazonaws.com wss://*.live-video.net https://*.live-video.net; worker-src 'self' blob:;">
     <title>IVS-NDI Bridge</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -238,10 +238,19 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                             <label class="form-label">🎚️ Jitter Buffer: <span id="jitterValue">0</span>ms</label>
                             <div style="display: flex; align-items: center; gap: var(--space-sm);">
                                 <span style="font-size: var(--font-size-xs); color: var(--color-text-muted);">0</span>
-                                <input type="range" id="jitterSlider" min="0" max="300" value="0" style="flex: 1; accent-color: var(--color-ndi);" oninput="updateJitterBuffer(this.value)">
-                                <span style="font-size: var(--font-size-xs); color: var(--color-text-muted);">300</span>
+                                <input type="range" id="jitterSlider" min="0" max="1000" value="0" style="flex: 1; accent-color: var(--color-ndi);" oninput="updateJitterBuffer(this.value)">
+                                <span style="font-size: var(--font-size-xs); color: var(--color-text-muted);">1000</span>
                             </div>
                             <div style="font-size: var(--font-size-xs); color: var(--color-text-muted); margin-top: 4px;">0 = direct (pas de buffer), augmenter pour lisser un flux instable</div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: var(--space-md);">
+                            <label class="form-label">⏱️ Compensation A/V: <span id="avSyncValue">0</span>ms</label>
+                            <div style="display: flex; align-items: center; gap: var(--space-sm);">
+                                <span style="font-size: var(--font-size-xs); color: var(--color-text-muted);">-1000</span>
+                                <input type="range" id="avSyncSlider" min="-1000" max="1000" value="0" style="flex: 1; accent-color: var(--color-warning);" oninput="updateAVSync(this.value)">
+                                <span style="font-size: var(--font-size-xs); color: var(--color-text-muted);">+1000</span>
+                            </div>
+                            <div style="font-size: var(--font-size-xs); color: var(--color-text-muted); margin-top: 4px;">Positif = retarder l'audio, Négatif = retarder la vidéo (pour corriger désync)</div>
                         </div>
                         <div class="ndi-status-grid" id="ndiStatusGrid"><span class="ndi-empty">Connectez-vous à un stage pour activer les sorties NDI</span></div>
                     </div>
@@ -318,6 +327,27 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                 </div>
 
                 <div class="card" style="margin-top: var(--space-md);">
+                    <div class="card-header">
+                        <span class="card-title">📊 Diagnostic WebRTC</span>
+                        <button class="btn btn-ghost" onclick="toggleWebRTCDiag()" id="webrtcDiagToggle">Afficher</button>
+                    </div>
+                    <div class="card-body" id="webrtcDiagPanel" style="display: none;">
+                        <div id="webrtcDiagContent" style="font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 300px; overflow-y: auto; background: var(--color-bg); padding: var(--space-md); border-radius: var(--radius-md);">
+                            Connectez-vous à un stage pour voir les statistiques WebRTC...
+                        </div>
+                        <div style="margin-top: var(--space-md); display: flex; gap: var(--space-sm); flex-wrap: wrap;">
+                            <button class="btn btn-ghost" onclick="refreshWebRTCStats()">🔄 Rafraîchir</button>
+                            <button class="btn btn-ghost" onclick="copyWebRTCStats()">📋 Copier</button>
+                            <div style="flex: 1;"></div>
+                            <label style="display: flex; align-items: center; gap: var(--space-xs); font-size: var(--font-size-sm); color: var(--color-text-secondary);">
+                                <input type="checkbox" id="autoRefreshStats" onchange="toggleAutoRefresh(this.checked)">
+                                Auto-refresh (2s)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: var(--space-md);">
                     <div class="card-header"><span class="card-title">Journal</span></div>
                     <div class="card-body"><div class="log-panel" id="logPanel"></div></div>
                 </div>
@@ -343,6 +373,11 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
         let jitterBufferMs = 0; // 0 = direct, pas de buffer
         let projectorEnabled = new Map(); // participantId -> boolean
         let availableDisplays = []; // Liste des écrans disponibles
+        let audioContexts = new Map(); // participantId -> { audioCtx, processor }
+        let webrtcStats = new Map(); // participantId -> dernières stats WebRTC
+        let autoRefreshInterval = null; // Pour auto-refresh des stats
+        let avSyncCompensation = 0; // Compensation A/V en ms (positif = retarder audio)
+        let ivsStageRef = null; // Référence au stage IVS pour accéder aux internals
         
         // ==================== CONTEXT MENU ====================
         
@@ -829,6 +864,454 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             }
         }
 
+        /**
+         * Setup audio extraction via AudioWorklet for NDI audio output
+         */
+        async function setupAudioExtraction(participantId, audioStream) {
+            if (!window.bridge || !ndiAvailable) return;
+            
+            // Cleanup existing
+            cleanupAudioExtraction(participantId);
+            
+            try {
+                // Créer AudioContext à 48kHz (standard NDI)
+                const audioCtx = new AudioContext({ sampleRate: 48000 });
+                
+                // Charger le worklet processor
+                await audioCtx.audioWorklet.addModule('workers/audio-processor.js');
+                
+                // Créer la source depuis le MediaStream
+                const source = audioCtx.createMediaStreamSource(audioStream);
+                
+                // Créer le processor node
+                const processor = new AudioWorkletNode(audioCtx, 'pcm-extractor');
+                
+                // Handler pour recevoir les buffers PCM
+                processor.port.onmessage = (event) => {
+                    if (!ndiEnabled.get(participantId)) return;
+                    
+                    const { left, right, sampleRate } = event.data;
+                    
+                    // Envoyer via IPC vers main process
+                    window.bridge.ndi.sendAudioFrame(
+                        participantId,
+                        left,
+                        right,
+                        sampleRate
+                    );
+                };
+                
+                // Connecter le graph audio
+                source.connect(processor);
+                // Note: on ne connecte PAS à destination pour éviter l'écho
+                
+                // Stocker pour cleanup
+                audioContexts.set(participantId, { audioCtx, processor, source });
+                
+                log(`🎵 Audio extraction démarrée: ${participantId.slice(0, 8)} @ ${audioCtx.sampleRate}Hz`, 'ndi');
+                
+            } catch (error) {
+                log(`⚠️ Erreur setup audio: ${error.message}`, 'warning');
+                console.error('[Audio] Setup error:', error);
+            }
+        }
+        
+        /**
+         * Cleanup audio extraction resources
+         */
+        function cleanupAudioExtraction(participantId) {
+            const audioData = audioContexts.get(participantId);
+            if (audioData) {
+                try {
+                    audioData.processor?.disconnect();
+                    audioData.source?.disconnect();
+                    audioData.audioCtx?.close();
+                } catch (e) {
+                    console.warn('[Audio] Cleanup error:', e);
+                }
+                audioContexts.delete(participantId);
+                log(`🎵 Audio extraction arrêtée: ${participantId.slice(0, 8)}`, 'ndi');
+            }
+        }
+
+        /**
+         * Monitor WebRTC stats for a participant's stream
+         * Affiche jitter, packet loss, frame rate dans l'UI
+         */
+        function startWebRTCMonitoring(participantId, mediaStream) {
+            const videoTrack = mediaStream.getVideoTracks()[0];
+            const audioTrack = mediaStream.getAudioTracks()[0];
+            
+            if (!videoTrack && !audioTrack) return;
+            
+            // Stocker les infos de monitoring
+            const monitorData = {
+                intervalId: null,
+                videoTrack,
+                audioTrack,
+                lastVideoBytes: 0,
+                lastAudioBytes: 0,
+                lastTimestamp: Date.now()
+            };
+            
+            // Mise à jour toutes les 2 secondes
+            monitorData.intervalId = setInterval(async () => {
+                try {
+                    const statsEl = document.getElementById(`webrtc-stats-${participantId}`);
+                    if (!statsEl) return;
+                    
+                    let statsText = '';
+                    
+                    if (videoTrack && videoTrack.readyState === 'live') {
+                        const settings = videoTrack.getSettings();
+                        const fps = settings.frameRate ? Math.round(settings.frameRate) : '?';
+                        const w = settings.width || '?';
+                        const h = settings.height || '?';
+                        statsText += `${w}×${h}@${fps}fps`;
+                    }
+                    
+                    if (audioTrack && audioTrack.readyState === 'live') {
+                        const settings = audioTrack.getSettings();
+                        const sr = settings.sampleRate ? `${Math.round(settings.sampleRate/1000)}kHz` : '';
+                        if (sr) statsText += ` | 🎤${sr}`;
+                    }
+                    
+                    statsEl.textContent = statsText || 'En attente...';
+                    
+                } catch (e) {
+                    console.warn('[WebRTC Stats] Error:', e);
+                }
+            }, 2000);
+            
+            webrtcStats.set(participantId, monitorData);
+            
+            // Log détaillé des settings initiaux
+            setTimeout(() => {
+                if (videoTrack) {
+                    const vs = videoTrack.getSettings();
+                    log(`🎬 Vidéo: ${vs.width}×${vs.height}@${Math.round(vs.frameRate || 0)}fps`, 'info');
+                }
+                if (audioTrack) {
+                    const as = audioTrack.getSettings();
+                    log(`🎤 Audio: ${as.sampleRate}Hz, ${as.channelCount}ch`, 'info');
+                }
+            }, 1000);
+        }
+        
+        function stopWebRTCMonitoring(participantId) {
+            const data = webrtcStats.get(participantId);
+            if (data?.intervalId) {
+                clearInterval(data.intervalId);
+            }
+            webrtcStats.delete(participantId);
+        }
+
+        // ==================== DIAGNOSTIC WEBRTC DÉTAILLÉ ====================
+        
+        function toggleWebRTCDiag() {
+            const panel = document.getElementById('webrtcDiagPanel');
+            const btn = document.getElementById('webrtcDiagToggle');
+            if (panel.style.display === 'none') {
+                panel.style.display = 'block';
+                btn.textContent = 'Masquer';
+                refreshWebRTCStats();
+            } else {
+                panel.style.display = 'none';
+                btn.textContent = 'Afficher';
+            }
+        }
+        
+        function toggleAutoRefresh(enabled) {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            if (enabled) {
+                autoRefreshInterval = setInterval(refreshWebRTCStats, 2000);
+                log('🔄 Auto-refresh stats activé', 'info');
+            }
+        }
+        
+        async function refreshWebRTCStats() {
+            const content = document.getElementById('webrtcDiagContent');
+            if (!content) return;
+            
+            if (participants.size === 0) {
+                content.textContent = 'Aucun participant connecté.\nConnectez-vous à un stage pour voir les statistiques.';
+                return;
+            }
+            
+            let output = `=== DIAGNOSTIC WEBRTC - ${new Date().toLocaleTimeString()} ===\n\n`;
+            
+            // Informations sur le stage IVS
+            output += `🎭 STAGE IVS\n`;
+            output += `   Participants: ${participants.size}\n`;
+            if (ivsStageRef) {
+                output += `   Stage ref: ${ivsStageRef ? 'OK' : 'NULL'}\n`;
+                // Essayer d'accéder aux propriétés internes
+                try {
+                    const stageKeys = Object.keys(ivsStageRef);
+                    output += `   Props: ${stageKeys.slice(0, 10).join(', ')}${stageKeys.length > 10 ? '...' : ''}\n`;
+                } catch (e) {
+                    output += `   Props: [erreur]\n`;
+                }
+            }
+            output += '\n';
+            
+            // Stats par participant
+            for (const [participantId, participant] of participants) {
+                const streams = participantStreams.get(participantId);
+                const displayName = participant?.userId || participantId.slice(0, 8);
+                
+                output += `👤 ${displayName} (${participantId.slice(0, 12)}...)\n`;
+                
+                if (streams?.combined) {
+                    const videoTrack = streams.combined.getVideoTracks()[0];
+                    const audioTrack = streams.combined.getAudioTracks()[0];
+                    
+                    // Video track info
+                    if (videoTrack) {
+                        const vs = videoTrack.getSettings();
+                        const vc = videoTrack.getConstraints();
+                        output += `   🎬 VIDÉO\n`;
+                        output += `      State: ${videoTrack.readyState} | Muted: ${videoTrack.muted}\n`;
+                        output += `      Resolution: ${vs.width || '?'}×${vs.height || '?'}\n`;
+                        output += `      FrameRate: ${vs.frameRate ? vs.frameRate.toFixed(1) : '?'} fps\n`;
+                        output += `      DeviceId: ${vs.deviceId?.slice(0, 20) || 'N/A'}...\n`;
+                    }
+                    
+                    // Audio track info
+                    if (audioTrack) {
+                        const as = audioTrack.getSettings();
+                        output += `   🎤 AUDIO\n`;
+                        output += `      State: ${audioTrack.readyState} | Muted: ${audioTrack.muted}\n`;
+                        output += `      SampleRate: ${as.sampleRate || '?'} Hz\n`;
+                        output += `      Channels: ${as.channelCount || '?'}\n`;
+                        output += `      DeviceId: ${as.deviceId?.slice(0, 20) || 'N/A'}...\n`;
+                    }
+                    
+                    // Essayer de récupérer les stats RTCPeerConnection si disponibles
+                    output += await getDetailedRTCStats(participantId, streams);
+                }
+                
+                // NDI status
+                const ndiState = ndiEnabled.get(participantId);
+                const captureState = ndiCapture.get(participantId);
+                if (ndiState && captureState) {
+                    const elapsed = (Date.now() - captureState.startTime) / 1000;
+                    const fps = Math.round(captureState.frameCount / elapsed);
+                    output += `   📡 NDI: ${captureState.frameCount} frames, ${fps} fps\n`;
+                }
+                
+                output += '\n';
+            }
+            
+            // Compensation A/V actuelle
+            output += `⚙️ CONFIGURATION\n`;
+            output += `   Jitter Buffer: ${jitterBufferMs}ms\n`;
+            output += `   A/V Sync Compensation: ${avSyncCompensation}ms\n`;
+            output += `   NDI Clock Video: ${ndiAvailable ? 'disponible' : 'indisponible'}\n`;
+            
+            content.textContent = output;
+        }
+        
+        async function getDetailedRTCStats(participantId, streams) {
+            let output = '';
+            
+            // Le SDK IVS n'expose pas directement les RTCPeerConnections
+            // On peut essayer d'accéder via les propriétés internes du stage
+            try {
+                if (ivsStageRef && typeof ivsStageRef.getStats === 'function') {
+                    // Certaines versions du SDK ont une méthode getStats
+                    const stats = await ivsStageRef.getStats();
+                    output += `   📊 STATS IVS: ${JSON.stringify(stats).slice(0, 200)}...\n`;
+                }
+            } catch (e) {
+                // Pas de méthode getStats disponible
+            }
+            
+            // Tenter d'accéder aux RTCRtpReceivers via le stage
+            try {
+                // Explorer les propriétés du stage pour trouver les PeerConnections
+                if (ivsStageRef) {
+                    const findPeerConnections = (obj, depth = 0, visited = new Set()) => {
+                        if (depth > 5 || !obj || visited.has(obj)) return [];
+                        visited.add(obj);
+                        
+                        const pcs = [];
+                        if (obj instanceof RTCPeerConnection) {
+                            pcs.push(obj);
+                        }
+                        
+                        if (typeof obj === 'object') {
+                            for (const key of Object.keys(obj)) {
+                                try {
+                                    const val = obj[key];
+                                    if (val && typeof val === 'object') {
+                                        pcs.push(...findPeerConnections(val, depth + 1, visited));
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                        return pcs;
+                    };
+                    
+                    const pcs = findPeerConnections(ivsStageRef);
+                    if (pcs.length > 0) {
+                        output += `   🔗 RTCPeerConnections trouvées: ${pcs.length}\n`;
+                        
+                        for (let i = 0; i < pcs.length; i++) {
+                            const pc = pcs[i];
+                            try {
+                                const stats = await pc.getStats();
+                                let videoJitter = null, audioJitter = null;
+                                let videoDelay = null, audioDelay = null;
+                                
+                                stats.forEach(report => {
+                                    if (report.type === 'inbound-rtp') {
+                                        const avgJitter = report.jitterBufferDelay && report.jitterBufferEmittedCount
+                                            ? (report.jitterBufferDelay / report.jitterBufferEmittedCount * 1000).toFixed(1)
+                                            : null;
+                                        
+                                        if (report.kind === 'video') {
+                                            videoJitter = avgJitter;
+                                            videoDelay = report.jitterBufferDelay;
+                                        } else if (report.kind === 'audio') {
+                                            audioJitter = avgJitter;
+                                            audioDelay = report.jitterBufferDelay;
+                                        }
+                                    }
+                                });
+                                
+                                if (videoJitter || audioJitter) {
+                                    output += `      PC${i} JitterBuffer: Vid=${videoJitter || '?'}ms | Aud=${audioJitter || '?'}ms\n`;
+                                    if (videoJitter && audioJitter) {
+                                        const diff = (parseFloat(videoJitter) - parseFloat(audioJitter)).toFixed(1);
+                                        output += `      ⚠️ A/V Diff: ${diff}ms ${Math.abs(parseFloat(diff)) > 50 ? '(DESYNC!)' : '(OK)'}\n`;
+                                    }
+                                }
+                            } catch (e) {
+                                output += `      PC${i}: erreur stats - ${e.message}\n`;
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                // Pas d'accès aux PeerConnections
+            }
+            
+            return output;
+        }
+        
+        function copyWebRTCStats() {
+            const content = document.getElementById('webrtcDiagContent');
+            if (content) {
+                navigator.clipboard.writeText(content.textContent).then(() => {
+                    log('📋 Stats copiées dans le presse-papier', 'success');
+                }).catch(err => {
+                    log(`❌ Erreur copie: ${err.message}`, 'error');
+                });
+            }
+        }
+        
+        // ==================== EXPLORATION SDK IVS ====================
+        
+        function exploreIVSStage() {
+            if (!ivsStageRef) {
+                log('⚠️ Stage non connecté', 'warning');
+                return null;
+            }
+            
+            const exploration = {
+                type: typeof ivsStageRef,
+                constructor: ivsStageRef.constructor?.name,
+                keys: Object.keys(ivsStageRef),
+                methods: [],
+                peerConnections: [],
+                receivers: []
+            };
+            
+            // Lister les méthodes
+            for (const key of Object.getOwnPropertyNames(Object.getPrototypeOf(ivsStageRef))) {
+                if (typeof ivsStageRef[key] === 'function') {
+                    exploration.methods.push(key);
+                }
+            }
+            
+            // Chercher les RTCPeerConnections récursivement
+            const searchForPC = (obj, path = '', depth = 0, visited = new Set()) => {
+                if (depth > 6 || !obj || typeof obj !== 'object' || visited.has(obj)) return;
+                visited.add(obj);
+                
+                if (obj instanceof RTCPeerConnection) {
+                    exploration.peerConnections.push({
+                        path,
+                        state: obj.connectionState,
+                        receivers: obj.getReceivers().map(r => ({
+                            kind: r.track?.kind,
+                            trackState: r.track?.readyState,
+                            jitterBufferTarget: r.jitterBufferTarget
+                        }))
+                    });
+                    
+                    // Collecter les receivers
+                    obj.getReceivers().forEach(receiver => {
+                        exploration.receivers.push({
+                            path,
+                            kind: receiver.track?.kind,
+                            hasJitterBufferTarget: 'jitterBufferTarget' in receiver,
+                            jitterBufferTarget: receiver.jitterBufferTarget
+                        });
+                    });
+                    return;
+                }
+                
+                for (const key of Object.keys(obj)) {
+                    try {
+                        const val = obj[key];
+                        if (val && typeof val === 'object') {
+                            searchForPC(val, `${path}.${key}`, depth + 1, visited);
+                        }
+                    } catch (e) {}
+                }
+            };
+            
+            searchForPC(ivsStageRef, 'stage');
+            
+            console.log('[IVS Exploration]', exploration);
+            log(`🔍 IVS: ${exploration.peerConnections.length} PC(s), ${exploration.receivers.length} receiver(s)`, 'info');
+            
+            return exploration;
+        }
+        
+        // ==================== COMPENSATION A/V SYNC ====================
+        
+        /**
+         * Applique une compensation A/V en retardant l'audio ou la vidéo
+         * Utilise jitterBufferTarget si disponible, sinon buffer manuel
+         */
+        async function setAVSyncCompensation(compensationMs) {
+            avSyncCompensation = compensationMs;
+            log(`⚙️ Compensation A/V: ${compensationMs}ms`, 'info');
+            
+            // Tenter d'appliquer via jitterBufferTarget sur les receivers
+            if (ivsStageRef) {
+                const exploration = exploreIVSStage();
+                if (exploration && exploration.receivers.length > 0) {
+                    for (const receiverInfo of exploration.receivers) {
+                        if (receiverInfo.hasJitterBufferTarget) {
+                            // On peut ajuster le jitter buffer!
+                            log(`✅ jitterBufferTarget supporté pour ${receiverInfo.kind}`, 'success');
+                            // Note: L'application réelle nécessiterait une référence au receiver
+                        }
+                    }
+                }
+            }
+            
+            // Pour l'instant, on stocke la valeur pour la compensation côté NDI
+            // L'audio sera retardé/avancé lors de l'envoi NDI
+        }
+
         async function toggleNDI(participantId) {
             const isEnabled = ndiEnabled.get(participantId);
             const participant = participants.get(participantId);
@@ -841,6 +1324,7 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             if (isEnabled) {
                 try {
                     stopFrameCapture(participantId);
+                    cleanupAudioExtraction(participantId);
                     await window.bridge.ndi.removeSender(participantId);
                     ndiEnabled.set(participantId, false);
                     ndiBtn?.classList.remove('active'); ndiBadge?.classList.remove('active'); container?.classList.remove('ndi-active');
@@ -852,8 +1336,20 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                     if (senderName) {
                         ndiEnabled.set(participantId, true);
                         ndiBtn?.classList.add('active'); ndiBadge?.classList.add('active'); container?.classList.add('ndi-active');
+                        
+                        // Démarrer capture vidéo
                         const captureStarted = startFrameCapture(participantId);
-                        if (captureStarted) log(`📡 NDI démarré: ${senderName}`, 'ndi');
+                        
+                        // Démarrer extraction audio
+                        const streams = participantStreams.get(participantId);
+                        if (streams?.audio) {
+                            await setupAudioExtraction(participantId, streams.audio);
+                        } else if (streams?.combined) {
+                            // Utiliser le stream combiné si pas de stream audio séparé
+                            await setupAudioExtraction(participantId, streams.combined);
+                        }
+                        
+                        if (captureStarted) log(`📡 NDI démarré: ${senderName} (vidéo+audio)`, 'ndi');
                         else log(`⚠️ NDI créé mais capture échouée`, 'warning');
                     } else log(`❌ Échec création NDI`, 'error');
                 } catch (err) { log(`❌ Erreur création NDI: ${err.message}`, 'error'); }
@@ -870,7 +1366,13 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
 
         async function stopAllNDI() {
             log('⏹ Arrêt de tous les NDI...', 'ndi');
-            for (const [participantId] of participants) { if (ndiEnabled.get(participantId)) await toggleNDI(participantId); }
+            for (const [participantId] of participants) { 
+                if (ndiEnabled.get(participantId)) await toggleNDI(participantId); 
+            }
+            // Cleanup tous les audio contexts restants
+            for (const [participantId] of audioContexts) {
+                cleanupAudioExtraction(participantId);
+            }
         }
 
         function combineStreams(participantId) {
@@ -928,7 +1430,7 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             ndiBtn.onclick = (e) => { e.stopPropagation(); toggleNDI(participantId); };
             overlayControls.appendChild(ndiBtn);
             const qualityIndicator = document.createElement('div');
-            qualityIndicator.className = 'quality-indicator'; qualityIndicator.textContent = 'HD';
+            qualityIndicator.className = 'quality-indicator'; qualityIndicator.id = `webrtc-stats-${participantId}`; qualityIndicator.textContent = 'HD';
             const overlay = document.createElement('div');
             overlay.className = 'video-overlay';
             const displayName = participant?.userId || participantId.slice(0, 8);
@@ -947,6 +1449,10 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             if (grid.querySelector('.empty-state')) grid.innerHTML = '';
             grid.appendChild(container);
             ndiEnabled.set(participantId, false);
+            
+            // Démarrer le monitoring WebRTC stats
+            startWebRTCMonitoring(participantId, combinedStream);
+            
             return container;
         }
 
@@ -979,6 +1485,7 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                     shouldSubscribeToParticipant: () => IVSBroadcastClient.SubscribeType.AUDIO_VIDEO
                 };
                 stage = new IVSBroadcastClient.Stage(currentToken, strategy);
+                ivsStageRef = stage; // Stocker référence pour diagnostic WebRTC
                 stage.on(IVSBroadcastClient.StageEvents.STAGE_CONNECTION_STATE_CHANGED, (state) => { log(`📡 ${state}`, 'info'); updateStatus(state); });
                 stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_JOINED, (participant) => {
                     log(`✅ ${participant.userId || participant.id} a rejoint`, 'success');
@@ -988,8 +1495,12 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
                 });
                 stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT, (participant) => {
                     log(`👋 ${participant.userId || participant.id} est parti`, 'warning');
-                    if (ndiEnabled.get(participant.id)) { stopFrameCapture(participant.id); if (window.bridge) window.bridge.ndi.removeSender(participant.id); }
-                    participants.delete(participant.id); participantStreams.delete(participant.id); ndiEnabled.delete(participant.id); ndiCapture.delete(participant.id);
+                    if (ndiEnabled.get(participant.id)) { 
+                        stopFrameCapture(participant.id); 
+                        cleanupAudioExtraction(participant.id);
+                        if (window.bridge) window.bridge.ndi.removeSender(participant.id); 
+                    }
+                    participants.delete(participant.id); participantStreams.delete(participant.id); ndiEnabled.delete(participant.id); ndiCapture.delete(participant.id); audioContexts.delete(participant.id);
                     document.querySelectorAll(`[id^="video-${participant.id}"]`).forEach(el => el.remove());
                     updateParticipantCount(); updateNDIPanel();
                     if (participants.size === 0) {
@@ -1032,8 +1543,12 @@ body { font-family: var(--font-family); font-size: var(--font-size-base); line-h
             try {
                 log('🔌 Déconnexion...', 'info');
                 await stopAllNDI();
+                // Cleanup all audio contexts
+                for (const [participantId] of audioContexts) {
+                    cleanupAudioExtraction(participantId);
+                }
                 await stage.leave();
-                stage = null; participants.clear(); participantStreams.clear(); ndiEnabled.clear(); ndiCapture.clear();
+                stage = null; ivsStageRef = null; participants.clear(); participantStreams.clear(); ndiEnabled.clear(); ndiCapture.clear(); audioContexts.clear();
                 document.getElementById('videoGrid').innerHTML = `<div class="empty-state"><svg class="empty-state-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg><p class="empty-state-text">Déconnecté</p></div>`;
                 updateParticipantCount(); updateStatus('DISCONNECTED'); updateNDIPanel();
                 document.getElementById('currentUser').textContent = '';
