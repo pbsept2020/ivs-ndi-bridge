@@ -60,9 +60,25 @@ contextBridge.exposeInMainWorld('bridge', {
             ipcRenderer.invoke('projector:isOpen', { participantId })
     },
 
+    // NDI Receiver / Monitor Control
+    ndiReceiver: {
+        findSources: (waitMs = 2000) => 
+            ipcRenderer.invoke('ndiRecv:findSources', { waitMs }),
+        createReceiver: (monitorId, source) => 
+            ipcRenderer.invoke('ndiRecv:createReceiver', { monitorId, source }),
+        receiveFrame: (monitorId, timeout = 100) => 
+            ipcRenderer.invoke('ndiRecv:receiveFrame', { monitorId, timeout }),
+        stop: (monitorId) => 
+            ipcRenderer.invoke('ndiRecv:stop', { monitorId }),
+        openMonitor: (source, displayId, borderlessFullscreen = true) => 
+            ipcRenderer.invoke('ndiRecv:openMonitor', { source, displayId, borderlessFullscreen }),
+        closeMonitor: (monitorId) => 
+            ipcRenderer.invoke('ndiRecv:closeMonitor', { monitorId })
+    },
+
     // Event listeners for NDI status updates
     on: (channel, callback) => {
-        const validChannels = ['ndi:status-update', 'ndi:error', 'projector:closed'];
+        const validChannels = ['ndi:status-update', 'ndi:error', 'projector:closed', 'ndiMonitor:closed'];
         if (validChannels.includes(channel)) {
             ipcRenderer.on(channel, (event, ...args) => callback(...args));
         }

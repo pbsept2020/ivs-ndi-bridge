@@ -701,6 +701,249 @@ app.on('before-quit', () => {
     cleanupNDI();
 });
 
+// ==================== NDI RECEIVER / MONITOR ====================
+
+// NDI Receiver state
+let ndiReceivers = new Map(); // monitorId -> { receiver, window, running }
+let ndiMonitorWindows = new Map(); // monitorId -> BrowserWindow
+let ndiFinder = null;
+
+/**
+ * Find available NDI sources on the network
+ */
+async function findNDISources(waitMs = 2000) {
+    if (!grandiose) {
+        console.error('[NDI Recv] Grandiose not initialized');
+        return [];
+    }
+    
+    try {
+        console.log(`[NDI Recv] Finding sources (wait ${waitMs}ms)...`);
+        const sources = await grandiose.find({ showLocalSources: true }, waitMs);
+        console.log(`[NDI Recv] Found ${sources.length} sources:`, sources.map(s => s.name));
+        return sources.map(s => ({
+            name: s.name,
+            urlAddress: s.urlAddress
+        }));
+    } catch (error) {
+        console.error('[NDI Recv] Find error:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Create NDI receiver and start receiving frames
+ */
+async function createNDIReceiver(monitorId, source) {
+    if (!grandiose) {
+        console.error('[NDI Recv] Grandiose not initialized');
+        return null;
+    }
+    
+    // Close existing receiver
+    if (ndiReceivers.has(monitorId)) {
+        await stopNDIReceiver(monitorId);
+    }
+    
+    try {
+        console.log(`[NDI Recv] Creating receiver for: ${source.name}`);
+        
+        const receiver = await grandiose.receive({
+            source: source,
+            colorFormat: grandiose.COLOR_FORMAT_RGBX_RGBA || 1,  // RGBA for easy canvas display
+            bandwidth: grandiose.BANDWIDTH_HIGHEST || 100,
+            allowVideoFields: true,
+            name: `IVS-Bridge-Monitor-${monitorId}`
+        });
+        
+        console.log('[NDI Recv] Receiver created:', Object.keys(receiver));
+        
+        ndiReceivers.set(monitorId, {
+            receiver,
+            source,
+            running: true,
+            frameCount: 0,
+            startTime: Date.now()
+        });
+        
+        return { success: true, sourceName: source.name };
+        
+    } catch (error) {
+        console.error('[NDI Recv] Create error:', error.message);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * Receive next video frame from NDI source
+ */
+async function receiveNDIFrame(monitorId, timeout = 100) {
+    const recvInfo = ndiReceivers.get(monitorId);
+    if (!recvInfo || !recvInfo.running) {
+        return null;
+    }
+    
+    try {
+        const frame = await recvInfo.receiver.video(timeout);
+        
+        if (frame && frame.data) {
+            recvInfo.frameCount++;
+            
+            // Log periodically
+            if (recvInfo.frameCount % 300 === 0) {
+                const elapsed = (Date.now() - recvInfo.startTime) / 1000;
+                const fps = Math.round(recvInfo.frameCount / elapsed);
+                console.log(`[NDI Recv] ${recvInfo.source.name}: ${recvInfo.frameCount} frames, ${fps} fps, ${frame.xres}x${frame.yres}`);
+            }
+            
+            return {
+                width: frame.xres,
+                height: frame.yres,
+                data: frame.data,  // Buffer RGBA
+                fourCC: frame.fourCC,
+                frameRate: frame.frameRateN / frame.frameRateD
+            };
+        }
+        return null;
+        
+    } catch (error) {
+        // Timeout is normal, don't log
+        if (!error.message.includes('timeout')) {
+            console.error('[NDI Recv] Frame error:', error.message);
+        }
+        return null;
+    }
+}
+
+/**
+ * Stop NDI receiver
+ */
+async function stopNDIReceiver(monitorId) {
+    const recvInfo = ndiReceivers.get(monitorId);
+    if (recvInfo) {
+        recvInfo.running = false;
+        
+        const elapsed = (Date.now() - recvInfo.startTime) / 1000;
+        const fps = elapsed > 0 ? Math.round(recvInfo.frameCount / elapsed) : 0;
+        console.log(`[NDI Recv] Stopping ${recvInfo.source.name}: ${recvInfo.frameCount} frames, ${fps} fps avg`);
+        
+        // Note: grandiose receivers are garbage collected, no explicit destroy
+        ndiReceivers.delete(monitorId);
+    }
+}
+
+/**
+ * Open NDI Monitor window with borderless fullscreen support
+ */
+function openNDIMonitor(source, displayId, borderlessFullscreen = true) {
+    const monitorId = `ndi-monitor-${Date.now()}`;
+    
+    let windowOptions = {
+        title: `NDI Monitor - ${source.name}`,
+        backgroundColor: '#000000',
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, 'preload.js')
+        }
+    };
+    
+    if (borderlessFullscreen) {
+        // Mode "borderless fullscreen" - contourne le bug NDI freeze
+        const displays = screen.getAllDisplays();
+        const targetDisplay = displayId 
+            ? displays.find(d => d.id === displayId) 
+            : screen.getPrimaryDisplay();
+        
+        if (targetDisplay) {
+            windowOptions.x = targetDisplay.bounds.x;
+            windowOptions.y = targetDisplay.bounds.y;
+            windowOptions.width = targetDisplay.bounds.width;
+            windowOptions.height = targetDisplay.bounds.height;
+        }
+        windowOptions.frame = false;
+        windowOptions.resizable = false;
+        windowOptions.movable = false;
+        windowOptions.fullscreen = false;  // PAS de fullscreen natif!
+        windowOptions.simpleFullscreen = false;
+        windowOptions.alwaysOnTop = true;
+        windowOptions.skipTaskbar = true;
+        windowOptions.hasShadow = false;
+        windowOptions.visibleOnAllWorkspaces = false;
+        console.log(`[NDI Monitor] Borderless fullscreen on display ${targetDisplay?.id}`);
+    } else {
+        // Mode fenêtré
+        windowOptions.width = 960;
+        windowOptions.height = 540;
+        windowOptions.frame = true;
+        windowOptions.resizable = true;
+    }
+    
+    const monitorWindow = new BrowserWindow(windowOptions);
+    
+    // Charger la page monitor avec les paramètres
+    monitorWindow.loadFile(path.join(__dirname, 'renderer', 'ndi-monitor.html'), {
+        query: { 
+            monitorId,
+            sourceName: source.name,
+            sourceUrl: source.urlAddress
+        }
+    });
+    
+    monitorWindow.on('closed', () => {
+        stopNDIReceiver(monitorId);
+        ndiMonitorWindows.delete(monitorId);
+        // Notifier le renderer principal
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('ndiMonitor:closed', { monitorId });
+        }
+    });
+    
+    // Raccourci Escape pour fermer
+    monitorWindow.webContents.on('before-input-event', (event, input) => {
+        if (input.key === 'Escape') {
+            monitorWindow.close();
+        }
+    });
+    
+    ndiMonitorWindows.set(monitorId, monitorWindow);
+    console.log(`[NDI Monitor] Opened for ${source.name} (${borderlessFullscreen ? 'borderless' : 'windowed'})`);
+    
+    return { success: true, monitorId };
+}
+
+// ==================== NDI RECEIVER IPC HANDLERS ====================
+
+ipcMain.handle('ndiRecv:findSources', async (event, { waitMs }) => {
+    return await findNDISources(waitMs || 2000);
+});
+
+ipcMain.handle('ndiRecv:createReceiver', async (event, { monitorId, source }) => {
+    return await createNDIReceiver(monitorId, source);
+});
+
+ipcMain.handle('ndiRecv:receiveFrame', async (event, { monitorId, timeout }) => {
+    return await receiveNDIFrame(monitorId, timeout || 100);
+});
+
+ipcMain.handle('ndiRecv:stop', async (event, { monitorId }) => {
+    await stopNDIReceiver(monitorId);
+    return true;
+});
+
+ipcMain.handle('ndiRecv:openMonitor', async (event, { source, displayId, borderlessFullscreen }) => {
+    return openNDIMonitor(source, displayId, borderlessFullscreen !== false);
+});
+
+ipcMain.handle('ndiRecv:closeMonitor', (event, { monitorId }) => {
+    const window = ndiMonitorWindows.get(monitorId);
+    if (window && !window.isDestroyed()) {
+        window.close();
+        return true;
+    }
+    return false;
+});
+
 // ==================== MENU ====================
 
 const menuTemplate = [
@@ -756,6 +999,79 @@ const menuTemplate = [
             },
             { type: 'separator' },
             { role: 'togglefullscreen' }
+        ]
+    },
+    {
+        label: 'NDI',
+        submenu: [
+            {
+                label: 'Ouvrir NDI Monitor...',
+                accelerator: 'CmdOrCtrl+M',
+                click: async () => {
+                    // Trouver les sources NDI
+                    const sources = await findNDISources(3000);
+                    if (sources.length === 0) {
+                        dialog.showMessageBox(mainWindow, {
+                            type: 'info',
+                            title: 'NDI Monitor',
+                            message: 'Aucune source NDI trouvée',
+                            detail: 'Assurez-vous qu\'une source NDI est active sur le réseau.'
+                        });
+                        return;
+                    }
+                    
+                    // Afficher la liste des sources
+                    const { response } = await dialog.showMessageBox(mainWindow, {
+                        type: 'question',
+                        title: 'NDI Monitor - Choisir source',
+                        message: 'Sources NDI disponibles:',
+                        buttons: sources.map(s => s.name).concat(['Annuler']),
+                        cancelId: sources.length
+                    });
+                    
+                    if (response < sources.length) {
+                        const source = sources[response];
+                        
+                        // Demander quel écran
+                        const displays = screen.getAllDisplays();
+                        const displayButtons = displays.map((d, i) => 
+                            `${d.id === screen.getPrimaryDisplay().id ? '⭐ ' : ''}Écran ${i + 1} (${d.bounds.width}x${d.bounds.height})`
+                        ).concat(['Fenêtré', 'Annuler']);
+                        
+                        const { response: displayResponse } = await dialog.showMessageBox(mainWindow, {
+                            type: 'question',
+                            title: 'NDI Monitor - Choisir affichage',
+                            message: `Afficher "${source.name}" sur:`,
+                            buttons: displayButtons,
+                            cancelId: displayButtons.length - 1
+                        });
+                        
+                        if (displayResponse < displays.length) {
+                            // Borderless fullscreen sur l'écran choisi
+                            openNDIMonitor(source, displays[displayResponse].id, true);
+                        } else if (displayResponse === displays.length) {
+                            // Mode fenêtré
+                            openNDIMonitor(source, null, false);
+                        }
+                    }
+                }
+            },
+            { type: 'separator' },
+            {
+                label: 'Rafraîchir sources NDI',
+                click: async () => {
+                    const sources = await findNDISources(3000);
+                    const detail = sources.length > 0 
+                        ? sources.map(s => `• ${s.name}`).join('\n')
+                        : 'Aucune source trouvée';
+                    dialog.showMessageBox(mainWindow, {
+                        type: 'info',
+                        title: 'Sources NDI',
+                        message: `${sources.length} source(s) NDI trouvée(s)`,
+                        detail
+                    });
+                }
+            }
         ]
     },
     {

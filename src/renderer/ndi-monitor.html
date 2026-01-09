@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NDI Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #000; cursor: none; }
+        #container { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; position: relative; }
+        #canvas { max-width: 100%; max-height: 100%; object-fit: contain; }
+        #osd {
+            position: absolute; top: 0; left: 0; right: 0; padding: 16px 24px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, transparent 100%);
+            color: #fff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            opacity: 0; transition: opacity 0.3s ease; display: flex; justify-content: space-between; align-items: center;
+        }
+        #osd.visible { opacity: 1; }
+        .osd-left { display: flex; flex-direction: column; gap: 4px; }
+        .source-name { font-size: 18px; font-weight: 600; color: #00d4aa; }
+        .source-info { font-size: 13px; color: #888; }
+        .osd-right { display: flex; align-items: center; gap: 16px; }
+        .stat { text-align: center; }
+        .stat-value { font-size: 24px; font-weight: 700; color: #00d4aa; }
+        .stat-label { font-size: 11px; color: #666; text-transform: uppercase; }
+        .close-hint { font-size: 12px; color: #666; background: rgba(255,255,255,0.1); padding: 6px 12px; border-radius: 4px; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: #fff; font-family: -apple-system, sans-serif; }
+        .spinner { width: 48px; height: 48px; border: 3px solid rgba(0, 212, 170, 0.2); border-top-color: #00d4aa; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #loading-text { font-size: 16px; color: #888; }
+        #error { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: #ef4444; font-family: -apple-system, sans-serif; }
+        #error.visible { display: block; }
+        .error-icon { font-size: 48px; margin-bottom: 16px; }
+        #error-message { font-size: 16px; max-width: 400px; }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="canvas"></canvas>
+        <div id="osd">
+            <div class="osd-left">
+                <div class="source-name" id="sourceName">NDI Source</div>
+                <div class="source-info" id="sourceInfo">Connecting...</div>
+            </div>
+            <div class="osd-right">
+                <div class="stat"><div class="stat-value" id="fpsValue">--</div><div class="stat-label">FPS</div></div>
+                <div class="stat"><div class="stat-value" id="resValue">--</div><div class="stat-label">Resolution</div></div>
+                <div class="close-hint">ESC pour fermer</div>
+            </div>
+        </div>
+        <div id="loading"><div class="spinner"></div><div id="loading-text">Connexion à la source NDI...</div></div>
+        <div id="error"><div class="error-icon">⚠️</div><div id="error-message">Erreur de connexion</div></div>
+    </div>
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const monitorId = params.get('monitorId');
+        const sourceName = params.get('sourceName');
+        const sourceUrl = params.get('sourceUrl');
+        
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const osd = document.getElementById('osd');
+        const loading = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        
+        let frameCount = 0, startTime = Date.now(), running = false, osdTimeout = null;
+        
+        document.getElementById('sourceName').textContent = sourceName || 'NDI Source';
+        
+        document.addEventListener('mousemove', () => {
+            document.body.style.cursor = 'default';
+            osd.classList.add('visible');
+            clearTimeout(osdTimeout);
+            osdTimeout = setTimeout(() => { osd.classList.remove('visible'); document.body.style.cursor = 'none'; }, 3000);
+        });
+        setTimeout(() => { document.body.style.cursor = 'none'; }, 2000);
+        
+        async function receiveLoop() {
+            if (!running) return;
+            try {
+                const frame = await window.bridge.ndiReceiver.receiveFrame(monitorId, 100);
+                if (frame && frame.data) {
+                    if (canvas.width !== frame.width || canvas.height !== frame.height) {
+                        canvas.width = frame.width; canvas.height = frame.height;
+                        document.getElementById('resValue').textContent = `${frame.width}x${frame.height}`;
+                        document.getElementById('sourceInfo').textContent = `${frame.width}x${frame.height} @ ${Math.round(frame.frameRate)}fps`;
+                    }
+                    const imageData = new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height);
+                    ctx.putImageData(imageData, 0, 0);
+                    frameCount++;
+                    if (frameCount % 30 === 0) {
+                        const fps = Math.round(frameCount / ((Date.now() - startTime) / 1000));
+                        document.getElementById('fpsValue').textContent = fps;
+                    }
+                    if (frameCount === 1) loading.style.display = 'none';
+                }
+            } catch (err) { console.error('[Monitor] Frame error:', err); }
+            if (running) requestAnimationFrame(receiveLoop);
+        }
+        
+        async function init() {
+            console.log('[Monitor] Init', { monitorId, sourceName, sourceUrl });
+            if (!window.bridge?.ndiReceiver) { showError('Bridge API non disponible'); return; }
+            const result = await window.bridge.ndiReceiver.createReceiver(monitorId, { name: sourceName, urlAddress: sourceUrl });
+            if (!result?.success) { showError(result?.error || 'Échec connexion NDI'); return; }
+            running = true; startTime = Date.now(); receiveLoop();
+        }
+        
+        function showError(msg) { loading.style.display = 'none'; errorDiv.classList.add('visible'); document.getElementById('error-message').textContent = msg; }
+        window.addEventListener('beforeunload', () => { running = false; window.bridge?.ndiReceiver?.stop(monitorId); });
+        init();
+    </script>
+</body>
+</html>
